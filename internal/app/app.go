@@ -543,6 +543,7 @@ func Run() error {
 		gateway.POST("/chat/completions", proxyService.HandleRequest)
 		gateway.POST("/completions", proxyService.HandleRequest)
 		gateway.POST("/responses", proxyService.HandleRequest)
+		gateway.POST("/responses/compact", proxyService.HandleRequest)
 		gateway.POST("/images/generations", proxyService.HandleImageGenerationCompatible)
 		gateway.GET("/images/generations/:id", proxyService.HandleImageGenerationTaskStatus)
 		gateway.POST("/images/edits", proxyService.HandleImageEdit)

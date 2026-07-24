@@ -965,18 +965,55 @@ func (s *ProxyService) handleConvertedProviderRequest(c *gin.Context, clientProt
 			return
 		}
 	}
+	pluginUpstream, isPluginUpstream := PluginUpstreamForType(target.Channel.Type)
+	if strings.HasPrefix(strings.TrimSpace(target.Channel.Type), pluginUpstreamPrefix) && !isPluginUpstream {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "The plugin upstream channel is unavailable", "type": "unsupported_upstream"})
+		return
+	}
 	upstreamProtocol := channelProtocol(target.Channel.Type)
+	if isPluginUpstream {
+		upstreamProtocol = protocolResponses
+		if clientProtocol != protocolResponses {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "This plugin upstream only supports the OpenAI Responses API", "type": "unsupported_upstream"})
+			return
+		}
+	}
+	compactRequest := strings.HasSuffix(strings.TrimRight(c.Request.URL.Path, "/"), "/responses/compact")
 	if normalized.Stream && upstreamProtocol != clientProtocol {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "Streaming is not supported when converting upstream protocol", "type": "unsupported_stream"})
 		return
 	}
 
-	if err := ValidateConfiguredHTTPURL(target.Channel.BaseURL); err != nil {
-		c.JSON(http.StatusBadGateway, gin.H{"error": "Upstream URL blocked by SSRF protection", "type": "upstream_error"})
-		return
+	if !isPluginUpstream {
+		if err := ValidateConfiguredHTTPURL(target.Channel.BaseURL); err != nil {
+			c.JSON(http.StatusBadGateway, gin.H{"error": "Upstream URL blocked by SSRF protection", "type": "upstream_error"})
+			return
+		}
 	}
 
-	prepared, err := prepareProviderRequest(&target.Channel, upstreamProtocol, normalized)
+	var prepared preparedUpstreamRequest
+	if isPluginUpstream {
+		payload, payloadErr := openAIResponsesPayloadMap(normalized)
+		if payloadErr != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"error": payloadErr.Error(), "type": "invalid_request"})
+			return
+		}
+		pluginPrepared, pluginErr := PreparePluginUpstreamRequest(c.Request.Context(), pluginUpstream, target.User.ID, newPluginRequestID(), target.Channel, payload, normalized.Stream, compactRequest)
+		if pluginErr != nil {
+			c.JSON(http.StatusBadGateway, gin.H{"error": pluginErr.Error(), "type": "upstream_error"})
+			return
+		}
+		if pluginPrepared.APIKey != "" && pluginPrepared.APIKey != target.Channel.APIKey {
+			if err := model.DB.Model(&model.Channel{}).Where("id = ?", target.Channel.ID).Update("api_key", pluginPrepared.APIKey).Error; err != nil {
+				c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to save refreshed upstream credential"})
+				return
+			}
+			target.Channel.APIKey = pluginPrepared.APIKey
+		}
+		prepared = preparedUpstreamRequest{Method: pluginPrepared.Method, URL: pluginPrepared.URL, Body: pluginPrepared.Body, Header: pluginPrepared.Headers, Context: c.Request.Context()}
+	} else {
+		prepared, err = prepareProviderRequest(&target.Channel, upstreamProtocol, normalized)
+	}
 	if err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error(), "type": "invalid_request"})
 		return
@@ -3277,7 +3314,8 @@ func redactedUpstreamURL(rawURL string) string {
 }
 
 func isResponsesPath(path string) bool {
-	return strings.HasSuffix(strings.TrimRight(path, "/"), "/responses")
+	path = strings.TrimRight(path, "/")
+	return strings.HasSuffix(path, "/responses") || strings.HasSuffix(path, "/responses/compact")
 }
 
 func normalizeResponsesRequest(requestBody map[string]interface{}) {

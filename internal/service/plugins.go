@@ -32,17 +32,18 @@ var (
 type pluginAPI struct{}
 
 type PluginManifest struct {
-	ID          string              `json:"id"`
-	Name        string              `json:"name"`
-	Version     string              `json:"version"`
-	Description string              `json:"description"`
-	Author      string              `json:"author"`
-	WASM        string              `json:"wasm"`
-	Permissions []string            `json:"permissions"`
-	Hooks       []PluginHook        `json:"hooks"`
-	Frontend    json.RawMessage     `json:"frontend"`
-	Settings    json.RawMessage     `json:"settings"`
-	Channels    []PluginChannelType `json:"channels"`
+	ID          string               `json:"id"`
+	Name        string               `json:"name"`
+	Version     string               `json:"version"`
+	Description string               `json:"description"`
+	Author      string               `json:"author"`
+	WASM        string               `json:"wasm"`
+	Permissions []string             `json:"permissions"`
+	Hooks       []PluginHook         `json:"hooks"`
+	Frontend    json.RawMessage      `json:"frontend"`
+	Settings    json.RawMessage      `json:"settings"`
+	Channels    []PluginChannelType  `json:"channels"`
+	Upstreams   []PluginUpstreamType `json:"upstreams"`
 }
 
 // PluginChannelType declares a message-channel provider implemented by a WASM
@@ -54,6 +55,17 @@ type PluginChannelType struct {
 	InboundAction string          `json:"inbound_action"`
 	SendAction    string          `json:"send_action"`
 	Config        json.RawMessage `json:"config"`
+}
+
+// PluginUpstreamType declares an AI provider implemented by a WASM plugin.
+// The proxy invokes PrepareAction before forwarding the resulting request.
+type PluginUpstreamType struct {
+	ID            string `json:"id"`
+	Name          string `json:"name"`
+	Description   string `json:"description"`
+	Protocol      string `json:"protocol"`
+	PrepareAction string `json:"prepare_action"`
+	RefreshAction string `json:"refresh_action"`
 }
 
 type PluginHook struct {
@@ -82,6 +94,7 @@ type pluginListItem struct {
 
 func init() {
 	RegisterStartupHook(loadPluginsOnStartup)
+	RegisterStartupHook(startPluginUpstreamRefresh)
 	RegisterUserRouteHook(registerPluginUserRoutes)
 	RegisterAdvancedChatRuntimeExtensionHook(pluginAdvancedChatRuntimeExtension)
 }
@@ -756,6 +769,25 @@ func validatePluginManifest(manifest PluginManifest) error {
 		}
 		seenChannels[channel.ID] = struct{}{}
 	}
+	seenUpstreams := map[string]struct{}{}
+	for _, upstream := range manifest.Upstreams {
+		if !pluginChannelTypeID.MatchString(strings.TrimSpace(upstream.ID)) {
+			return fmt.Errorf("invalid plugin upstream type id: %s", upstream.ID)
+		}
+		if strings.TrimSpace(upstream.Name) == "" || len([]rune(strings.TrimSpace(upstream.Name))) > 120 {
+			return fmt.Errorf("plugin upstream type %s requires a name up to 120 characters", upstream.ID)
+		}
+		if strings.TrimSpace(upstream.Protocol) != "responses" {
+			return fmt.Errorf("plugin upstream type %s must use the responses protocol", upstream.ID)
+		}
+		if strings.TrimSpace(upstream.PrepareAction) == "" {
+			return fmt.Errorf("plugin upstream type %s requires prepare_action", upstream.ID)
+		}
+		if _, exists := seenUpstreams[upstream.ID]; exists {
+			return fmt.Errorf("duplicate plugin upstream type id: %s", upstream.ID)
+		}
+		seenUpstreams[upstream.ID] = struct{}{}
+	}
 	return nil
 }
 
@@ -788,6 +820,14 @@ func normalizePluginManifest(manifest PluginManifest) PluginManifest {
 		if len(manifest.Channels[i].Config) == 0 {
 			manifest.Channels[i].Config = nil
 		}
+	}
+	for i := range manifest.Upstreams {
+		manifest.Upstreams[i].ID = strings.TrimSpace(manifest.Upstreams[i].ID)
+		manifest.Upstreams[i].Name = strings.TrimSpace(manifest.Upstreams[i].Name)
+		manifest.Upstreams[i].Description = strings.TrimSpace(manifest.Upstreams[i].Description)
+		manifest.Upstreams[i].Protocol = strings.TrimSpace(manifest.Upstreams[i].Protocol)
+		manifest.Upstreams[i].PrepareAction = strings.TrimSpace(manifest.Upstreams[i].PrepareAction)
+		manifest.Upstreams[i].RefreshAction = strings.TrimSpace(manifest.Upstreams[i].RefreshAction)
 	}
 	sort.SliceStable(manifest.Hooks, func(i, j int) bool {
 		if manifest.Hooks[i].Priority == manifest.Hooks[j].Priority {
