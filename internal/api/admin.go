@@ -103,6 +103,7 @@ type configurationChannel struct {
 	Type             string          `json:"type"`
 	BaseURL          string          `json:"base_url"`
 	APIKey           string          `json:"api_key"`
+	PluginConfigJSON string          `json:"plugin_config"`
 	UserChannelName  string          `json:"user_channel_name,omitempty"`
 	Multiplier       decimal.Decimal `json:"multiplier"`
 	Priority         int             `json:"priority"`
@@ -626,7 +627,7 @@ func buildConfigurationExport(sections map[string]bool) (configurationExport, er
 			if channel.UserChannelID != nil {
 				userChannelName = channel.UserChannel.Name
 			}
-			export.Channels = append(export.Channels, configurationChannel{Name: channel.Name, Type: channel.Type, BaseURL: channel.BaseURL, APIKey: channel.APIKey, UserChannelName: userChannelName, Multiplier: channel.Multiplier, Priority: channel.Priority, Weight: channel.Weight, Enabled: channel.Enabled, PriceSyncEnabled: channel.PriceSyncEnabled, PriceSyncCron: channel.PriceSyncCron})
+			export.Channels = append(export.Channels, configurationChannel{Name: channel.Name, Type: channel.Type, BaseURL: channel.BaseURL, APIKey: channel.APIKey, PluginConfigJSON: channel.PluginConfigJSON, UserChannelName: userChannelName, Multiplier: channel.Multiplier, Priority: channel.Priority, Weight: channel.Weight, Enabled: channel.Enabled, PriceSyncEnabled: channel.PriceSyncEnabled, PriceSyncCron: channel.PriceSyncCron})
 		}
 	}
 	if sections[configurationSectionModels] || sections[configurationSectionPrices] {
@@ -736,11 +737,15 @@ func importConfigurationChannels(tx *gorm.DB, userChannels []configurationUserCh
 			}
 			userChannelID = &id
 		}
-		values := map[string]interface{}{"type": item.Type, "api_key": item.APIKey, "user_channel_id": userChannelID, "multiplier": item.Multiplier, "priority": item.Priority, "weight": item.Weight, "enabled": item.Enabled, "price_sync_enabled": item.PriceSyncEnabled, "price_sync_cron": item.PriceSyncCron}
+		candidate := model.Channel{Type: item.Type, PluginConfigJSON: item.PluginConfigJSON}
+		if err := service.ValidatePluginUpstreamChannel(candidate); err != nil {
+			return err
+		}
+		values := map[string]interface{}{"type": item.Type, "api_key": item.APIKey, "plugin_config_json": item.PluginConfigJSON, "user_channel_id": userChannelID, "multiplier": item.Multiplier, "priority": item.Priority, "weight": item.Weight, "enabled": item.Enabled, "price_sync_enabled": item.PriceSyncEnabled, "price_sync_cron": item.PriceSyncCron}
 		var existing model.Channel
 		err := tx.Where("name = ? AND base_url = ?", item.Name, item.BaseURL).First(&existing).Error
 		if errors.Is(err, gorm.ErrRecordNotFound) {
-			existing = model.Channel{Name: item.Name, Type: item.Type, BaseURL: item.BaseURL, APIKey: item.APIKey, UserChannelID: userChannelID, Multiplier: item.Multiplier, Priority: item.Priority, Weight: item.Weight, Enabled: item.Enabled, PriceSyncEnabled: item.PriceSyncEnabled, PriceSyncCron: item.PriceSyncCron}
+			existing = model.Channel{Name: item.Name, Type: item.Type, BaseURL: item.BaseURL, APIKey: item.APIKey, PluginConfigJSON: item.PluginConfigJSON, UserChannelID: userChannelID, Multiplier: item.Multiplier, Priority: item.Priority, Weight: item.Weight, Enabled: item.Enabled, PriceSyncEnabled: item.PriceSyncEnabled, PriceSyncCron: item.PriceSyncCron}
 			if err := tx.Create(&existing).Error; err != nil {
 				return err
 			}
@@ -2029,6 +2034,10 @@ func (api *ChannelAPI) Create(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 		return
 	}
+	if err := service.ValidatePluginUpstreamChannel(channel); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
 	if err := service.ValidateConfiguredHTTPURL(channel.BaseURL); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "Unsafe or invalid base URL"})
 		return
@@ -2065,6 +2074,10 @@ func (api *ChannelAPI) Update(c *gin.Context) {
 	lastHealthCheckedAt := channel.LastHealthCheckedAt
 	lastHealthStatus := channel.LastHealthStatus
 	if err := c.ShouldBindJSON(&channel); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+	if err := service.ValidatePluginUpstreamChannel(channel); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 		return
 	}

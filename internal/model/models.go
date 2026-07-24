@@ -266,6 +266,7 @@ type Channel struct {
 	Type                string                   `gorm:"size:50" json:"type"` // openai, claude
 	BaseURL             string                   `gorm:"size:255" json:"base_url"`
 	APIKey              string                   `gorm:"size:255" json:"api_key"`
+	PluginConfigJSON    string                   `gorm:"type:text" json:"plugin_config"`
 	Multiplier          decimal.Decimal          `gorm:"type:decimal(10,4);default:1.0" json:"multiplier"`
 	Priority            int                      `gorm:"default:1" json:"priority"`
 	Weight              int                      `gorm:"default:1" json:"weight"`

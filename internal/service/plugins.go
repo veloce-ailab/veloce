@@ -60,12 +60,14 @@ type PluginChannelType struct {
 // PluginUpstreamType declares an AI provider implemented by a WASM plugin.
 // The proxy invokes PrepareAction before forwarding the resulting request.
 type PluginUpstreamType struct {
-	ID            string `json:"id"`
-	Name          string `json:"name"`
-	Description   string `json:"description"`
-	Protocol      string `json:"protocol"`
-	PrepareAction string `json:"prepare_action"`
-	RefreshAction string `json:"refresh_action"`
+	ID             string          `json:"id"`
+	Name           string          `json:"name"`
+	Description    string          `json:"description"`
+	Protocol       string          `json:"protocol"`
+	DefaultBaseURL string          `json:"default_base_url,omitempty"`
+	PrepareAction  string          `json:"prepare_action"`
+	RefreshAction  string          `json:"refresh_action"`
+	Config         json.RawMessage `json:"config,omitempty"`
 }
 
 type PluginHook struct {
@@ -77,19 +79,20 @@ type PluginHook struct {
 }
 
 type pluginListItem struct {
-	ID          string          `json:"id"`
-	Name        string          `json:"name"`
-	Version     string          `json:"version"`
-	Description string          `json:"description"`
-	Author      string          `json:"author"`
-	Enabled     bool            `json:"enabled"`
-	Permissions []string        `json:"permissions"`
-	Hooks       []PluginHook    `json:"hooks"`
-	Frontend    json.RawMessage `json:"frontend,omitempty"`
-	Settings    json.RawMessage `json:"settings,omitempty"`
-	LastError   string          `json:"last_error,omitempty"`
-	CreatedAt   time.Time       `json:"created_at"`
-	UpdatedAt   time.Time       `json:"updated_at"`
+	ID          string               `json:"id"`
+	Name        string               `json:"name"`
+	Version     string               `json:"version"`
+	Description string               `json:"description"`
+	Author      string               `json:"author"`
+	Enabled     bool                 `json:"enabled"`
+	Permissions []string             `json:"permissions"`
+	Hooks       []PluginHook         `json:"hooks"`
+	Frontend    json.RawMessage      `json:"frontend,omitempty"`
+	Settings    json.RawMessage      `json:"settings,omitempty"`
+	Upstreams   []PluginUpstreamType `json:"upstreams,omitempty"`
+	LastError   string               `json:"last_error,omitempty"`
+	CreatedAt   time.Time            `json:"created_at"`
+	UpdatedAt   time.Time            `json:"updated_at"`
 }
 
 func init() {
@@ -569,6 +572,12 @@ func requirePluginAdmin(c *gin.Context, user *model.User) bool {
 }
 
 func pluginListResponse(plugin model.Plugin, enabled bool) pluginListItem {
+	var manifest PluginManifest
+	_ = json.Unmarshal([]byte(plugin.ManifestJSON), &manifest)
+	frontend := json.RawMessage(nonEmptyJSON(plugin.FrontendJSON, "null"))
+	if len(manifest.Frontend) > 0 && string(manifest.Frontend) != "null" {
+		frontend = manifest.Frontend
+	}
 	return pluginListItem{
 		ID:          plugin.ID,
 		Name:        plugin.Name,
@@ -578,8 +587,9 @@ func pluginListResponse(plugin model.Plugin, enabled bool) pluginListItem {
 		Enabled:     enabled,
 		Permissions: decodePluginStringList(plugin.PermissionsJSON),
 		Hooks:       decodeHooks(plugin.HooksJSON),
-		Frontend:    json.RawMessage(nonEmptyJSON(plugin.FrontendJSON, "null")),
+		Frontend:    frontend,
 		Settings:    json.RawMessage(nonEmptyJSON(plugin.SettingsJSON, "null")),
+		Upstreams:   manifest.Upstreams,
 		LastError:   plugin.LastError,
 		CreatedAt:   plugin.CreatedAt,
 		UpdatedAt:   plugin.UpdatedAt,
@@ -597,7 +607,7 @@ func userPluginStates(userID uint) map[string]bool {
 }
 
 func pluginConfigForUser(userID uint, pluginID string) map[string]interface{} {
-	if userID == 0 || strings.TrimSpace(pluginID) == "" {
+	if strings.TrimSpace(pluginID) == "" {
 		return map[string]interface{}{}
 	}
 	var plugin model.Plugin
@@ -610,6 +620,9 @@ func pluginConfigForUser(userID uint, pluginID string) map[string]interface{} {
 			_ = json.Unmarshal([]byte(plugin.GlobalConfigJSON), &values)
 		}
 		return values
+	}
+	if userID == 0 {
+		return map[string]interface{}{}
 	}
 	var config model.UserPluginConfig
 	if err := model.DB.Where("user_id = ? AND plugin_id = ?", userID, pluginID).Limit(1).Find(&config).Error; err != nil {
@@ -783,6 +796,12 @@ func validatePluginManifest(manifest PluginManifest) error {
 		if strings.TrimSpace(upstream.PrepareAction) == "" {
 			return fmt.Errorf("plugin upstream type %s requires prepare_action", upstream.ID)
 		}
+		if len(upstream.Config) > 0 {
+			var config map[string]interface{}
+			if err := json.Unmarshal(upstream.Config, &config); err != nil || config == nil {
+				return fmt.Errorf("plugin upstream type %s config must be a JSON object", upstream.ID)
+			}
+		}
 		if _, exists := seenUpstreams[upstream.ID]; exists {
 			return fmt.Errorf("duplicate plugin upstream type id: %s", upstream.ID)
 		}
@@ -826,8 +845,12 @@ func normalizePluginManifest(manifest PluginManifest) PluginManifest {
 		manifest.Upstreams[i].Name = strings.TrimSpace(manifest.Upstreams[i].Name)
 		manifest.Upstreams[i].Description = strings.TrimSpace(manifest.Upstreams[i].Description)
 		manifest.Upstreams[i].Protocol = strings.TrimSpace(manifest.Upstreams[i].Protocol)
+		manifest.Upstreams[i].DefaultBaseURL = strings.TrimSpace(manifest.Upstreams[i].DefaultBaseURL)
 		manifest.Upstreams[i].PrepareAction = strings.TrimSpace(manifest.Upstreams[i].PrepareAction)
 		manifest.Upstreams[i].RefreshAction = strings.TrimSpace(manifest.Upstreams[i].RefreshAction)
+		if len(manifest.Upstreams[i].Config) == 0 {
+			manifest.Upstreams[i].Config = nil
+		}
 	}
 	sort.SliceStable(manifest.Hooks, func(i, j int) bool {
 		if manifest.Hooks[i].Priority == manifest.Hooks[j].Priority {
