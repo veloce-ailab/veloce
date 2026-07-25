@@ -238,6 +238,7 @@ func (s *ProxyService) createVideoUpstreamGeneration(c *gin.Context, requestBody
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error(), "type": "invalid_request"})
 		return videoGenerationResult{}, false
 	}
+	prepared.Context = c.Request.Context()
 
 	resp, err := s.doUpstreamRequest(prepared, &target.Channel)
 	if err != nil {
@@ -361,6 +362,7 @@ func (s *ProxyService) HandleImageGeneration(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error(), "type": "invalid_request"})
 		return
 	}
+	prepared.Context = c.Request.Context()
 
 	resp, err := s.doUpstreamRequest(prepared, &target.Channel)
 	if err != nil {
@@ -464,6 +466,7 @@ func (s *ProxyService) HandleImageEdit(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error(), "type": "invalid_request"})
 		return
 	}
+	prepared.Context = c.Request.Context()
 
 	resp, err := s.doUpstreamRequest(prepared, &target.Channel)
 	if err != nil {
@@ -680,9 +683,10 @@ func (s *ProxyService) fetchUpstreamVideoTask(c *gin.Context, channel *model.Cha
 		return nil, nil, nil, false
 	}
 	prepared := preparedUpstreamRequest{
-		Method: http.MethodGet,
-		URL:    upstreamURLForRequest(channel.BaseURL, path),
-		Header: adapters.Headers(channel.Type, channel.APIKey, adapters.Protocol(upstreamProtocol), false),
+		Method:  http.MethodGet,
+		URL:     upstreamURLForRequest(channel.BaseURL, path),
+		Header:  adapters.Headers(channel.Type, channel.APIKey, adapters.Protocol(upstreamProtocol), false),
+		Context: c.Request.Context(),
 	}
 	resp, err := s.doUpstreamRequest(prepared, channel)
 	if err != nil {
@@ -1024,6 +1028,7 @@ func (s *ProxyService) handleConvertedProviderRequest(c *gin.Context, clientProt
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error(), "type": "invalid_request"})
 		return
 	}
+	prepared.Context = c.Request.Context()
 	resp, err := s.doUpstreamRequest(prepared, &target.Channel)
 	if err != nil {
 		logUpstreamRequestFailure(c, &target.Channel, prepared.URL, prepared.Body, err)

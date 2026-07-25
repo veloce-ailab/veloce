@@ -2,6 +2,7 @@ package service
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"errors"
 	"mime/multipart"
@@ -14,6 +15,32 @@ import (
 	"github.com/shopspring/decimal"
 	"github.com/veloce-ailab/veloce/internal/model"
 )
+
+func TestDoUpstreamRequestHonorsCanceledContext(t *testing.T) {
+	called := false
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		called = true
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	defer upstream.Close()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	resp, err := NewProxyService().doUpstreamRequest(preparedUpstreamRequest{
+		Method:  http.MethodGet,
+		URL:     upstream.URL,
+		Context: ctx,
+	}, &model.Channel{})
+	if resp != nil {
+		resp.Body.Close()
+	}
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("doUpstreamRequest error = %v, want context.Canceled", err)
+	}
+	if called {
+		t.Fatal("upstream was called after the request context was canceled")
+	}
+}
 
 func TestDoUpstreamRequestRejectsUnsafeRedirect(t *testing.T) {
 	redirectTarget := "http://127.0.0.1/internal"

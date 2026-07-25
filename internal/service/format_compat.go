@@ -216,6 +216,7 @@ func (s *ProxyService) handleCompatibleJSONGeneration(c *gin.Context, opts compa
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error(), "type": "invalid_request"})
 		return
 	}
+	prepared.Context = c.Request.Context()
 	resp, err := s.doUpstreamRequest(prepared, &target.Channel)
 	if err != nil {
 		logUpstreamRequestFailure(c, &target.Channel, prepared.URL, prepared.Body, err)
