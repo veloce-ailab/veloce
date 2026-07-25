@@ -16,7 +16,7 @@ permissions:
   contents: write
 
 env:
-  WEB_REPOSITORY: veloce-ailab/veloce-frontend
+  WEB_REPOSITORY: veloce-ailab/veloce-web
 
 jobs:
   build:
