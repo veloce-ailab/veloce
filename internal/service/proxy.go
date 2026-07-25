@@ -1931,29 +1931,6 @@ func writeUpstreamResponse(c *gin.Context, resp *http.Response, respBody []byte)
 	c.Writer.Write(respBody)
 }
 
-func (s *ProxyService) forwardToUpstream(channel *model.Channel, method, path string, body []byte, originalHeader http.Header) (*http.Response, error) {
-	if path == "" || !strings.HasPrefix(path, "/") {
-		path = "/" + path
-	}
-	fullURL := upstreamURLForRequest(channel.BaseURL, path)
-
-	req, err := http.NewRequest(method, fullURL, bytes.NewBuffer(body))
-	if err != nil {
-		return nil, err
-	}
-
-	// Copy headers and set Authorization
-	for k, v := range originalHeader {
-		if !shouldSkipProxyHeader(k) {
-			req.Header[k] = v
-		}
-	}
-	req.Header.Set("Authorization", "Bearer "+channel.APIKey)
-
-	client := &http.Client{Timeout: 60 * time.Second}
-	return client.Do(req)
-}
-
 func (s *ProxyService) doUpstreamRequest(prepared preparedUpstreamRequest, channel *model.Channel) (*http.Response, error) {
 	ctx := prepared.Context
 	if ctx == nil {
