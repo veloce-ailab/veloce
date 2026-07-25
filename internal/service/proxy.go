@@ -2447,7 +2447,11 @@ func normalizeClaudeRequest(requestBody map[string]interface{}, modelName string
 }
 
 func normalizeGeminiRequest(requestBody map[string]interface{}, modelName string) normalizedAIRequest {
-	normalized := normalizedAIRequest{Model: modelName}
+	normalized := normalizedAIRequest{
+		Model:      modelName,
+		Tools:      interfaceSliceFromRequest(requestBody, "tools"),
+		ToolChoice: requestBody["tool_choice"],
+	}
 	if config, ok := requestBody["generationConfig"].(map[string]interface{}); ok {
 		normalized.MaxTokens = intFromRequest(config, "maxOutputTokens")
 		normalized.Temperature = floatPtrFromRequest(config, "temperature")
@@ -2463,10 +2467,10 @@ func normalizeGeminiRequest(requestBody map[string]interface{}, modelName string
 			if strings.EqualFold(stringFromValue(item["role"]), "model") {
 				role = "assistant"
 			}
-			addNormalizedMessage(&normalized, role, geminiPartsText(item["parts"]))
+			addNormalizedMessage(&normalized, role, geminiPartsText(item["parts"]), item["tool_calls"])
 		}
 	} else if text := contentToText(requestBody["contents"]); strings.TrimSpace(text) != "" {
-		addNormalizedMessage(&normalized, "user", text)
+		addNormalizedMessage(&normalized, "user", text, nil)
 	}
 	return normalized
 }
@@ -2595,7 +2599,13 @@ func claudeMessagesPayloadMap(request normalizedAIRequest) (map[string]interface
 		if message.Role == "assistant" {
 			role = "assistant"
 		}
-		messages = append(messages, map[string]interface{}{"role": role, "content": message.Content})
+		content := []map[string]interface{}{{"type": "text", "text": message.Content}}
+		if len(message.ToolCalls) > 0 {
+			for _, tc := range message.ToolCalls {
+				content = append(content, tc.(map[string]interface{}))
+			}
+		}
+		messages = append(messages, map[string]interface{}{"role": role, "content": content})
 	}
 	if len(messages) == 0 {
 		return nil, errors.New("messages are required")
@@ -2615,6 +2625,9 @@ func claudeMessagesPayloadMap(request normalizedAIRequest) (map[string]interface
 	if request.Temperature != nil {
 		payload["temperature"] = *request.Temperature
 	}
+	if len(request.Tools) > 0 {
+		payload["tools"] = request.Tools
+	}
 	return payload, nil
 }
 
@@ -2625,9 +2638,15 @@ func geminiGenerateContentPayload(request normalizedAIRequest) ([]byte, error) {
 		if message.Role == "assistant" {
 			role = "model"
 		}
+		parts := []map[string]interface{}{{"text": message.Content}}
+		if len(message.ToolCalls) > 0 {
+			for _, tc := range message.ToolCalls {
+				parts = append(parts, tc.(map[string]interface{}))
+			}
+		}
 		contents = append(contents, map[string]interface{}{
 			"role":  role,
-			"parts": []map[string]string{{"text": message.Content}},
+			"parts": parts,
 		})
 	}
 	if len(contents) == 0 {
@@ -2638,6 +2657,9 @@ func geminiGenerateContentPayload(request normalizedAIRequest) ([]byte, error) {
 		payload["systemInstruction"] = map[string]interface{}{
 			"parts": []map[string]string{{"text": request.System}},
 		}
+	}
+	if len(request.Tools) > 0 {
+		payload["tools"] = request.Tools
 	}
 	generationConfig := map[string]interface{}{}
 	if request.MaxTokens > 0 {
@@ -2715,11 +2737,15 @@ func providerResponseFromOpenAI(payload map[string]interface{}) providerResponse
 func providerResponseFromClaude(payload map[string]interface{}) providerResponseData {
 	usage, _ := parseUsageTokens(payload)
 	parts := []string{}
+	var toolCalls []interface{}
 	if content, ok := payload["content"].([]interface{}); ok {
 		for _, raw := range content {
 			if item, ok := raw.(map[string]interface{}); ok {
 				if text := contentToText(item); strings.TrimSpace(text) != "" {
 					parts = append(parts, text)
+				}
+				if item["type"] == "tool_use" {
+					toolCalls = append(toolCalls, item)
 				}
 			}
 		}
@@ -2727,6 +2753,7 @@ func providerResponseFromClaude(payload map[string]interface{}) providerResponse
 	return providerResponseData{
 		ID:                      stringFromValue(payload["id"]),
 		Text:                    strings.TrimSpace(strings.Join(parts, "\n")),
+		ToolCalls:               toolCalls,
 		InputTokens:             usage.InputTokens,
 		OutputTokens:            usage.OutputTokens,
 		CachedInputTokens:       usage.CachedInputTokens,
@@ -2742,6 +2769,7 @@ func providerResponseFromClaude(payload map[string]interface{}) providerResponse
 func providerResponseFromGemini(payload map[string]interface{}) providerResponseData {
 	usage, _ := parseUsageTokens(payload)
 	parts := []string{}
+	var toolCalls []interface{}
 	if candidates, ok := payload["candidates"].([]interface{}); ok {
 		for _, rawCandidate := range candidates {
 			candidate, ok := rawCandidate.(map[string]interface{})
@@ -2755,10 +2783,18 @@ func providerResponseFromGemini(payload map[string]interface{}) providerResponse
 			if text := geminiPartsText(content["parts"]); strings.TrimSpace(text) != "" {
 				parts = append(parts, text)
 			}
+			if partsSlice, ok := content["parts"].([]interface{}); ok {
+				for _, p := range partsSlice {
+					if part, ok := p.(map[string]interface{}); ok && part["functionCall"] != nil {
+						toolCalls = append(toolCalls, part)
+					}
+				}
+			}
 		}
 	}
 	return providerResponseData{
 		Text:                    strings.TrimSpace(strings.Join(parts, "\n")),
+		ToolCalls:               toolCalls,
 		InputTokens:             usage.InputTokens,
 		OutputTokens:            usage.OutputTokens,
 		CachedInputTokens:       usage.CachedInputTokens,
