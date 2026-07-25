@@ -31,6 +31,42 @@ func TestPluginListResponseUsesFrontendFromManifest(t *testing.T) {
 	}
 }
 
+func TestPluginFrontendAccessFiltersRestrictedPages(t *testing.T) {
+	raw := json.RawMessage(`{
+		"sidebar":[
+			{"label":"公开页面","path":"guide"},
+			{"label":"管理页面","path":"status"}
+		],
+		"routes":[
+			{"path":"guide","access":"public","page":{"type":"page"}},
+			{"path":"status","access":"admin","page":{"type":"page"}}
+		]
+	}`)
+
+	filtered := filterPluginFrontendForUser(raw, false)
+	var frontend struct {
+		Sidebar []struct {
+			Path string `json:"path"`
+		} `json:"sidebar"`
+		Routes []struct {
+			Path string `json:"path"`
+		} `json:"routes"`
+	}
+	if err := json.Unmarshal(filtered, &frontend); err != nil {
+		t.Fatal(err)
+	}
+	if len(frontend.Routes) != 1 || frontend.Routes[0].Path != "guide" {
+		t.Fatalf("visible routes = %#v, want only guide", frontend.Routes)
+	}
+	if len(frontend.Sidebar) != 1 || frontend.Sidebar[0].Path != "guide" {
+		t.Fatalf("visible sidebar = %#v, want only guide", frontend.Sidebar)
+	}
+
+	if err := validatePluginFrontendAccess(json.RawMessage(`{"routes":[{"path":"status","access":"owner"}]}`)); err == nil {
+		t.Fatal("invalid frontend access should be rejected")
+	}
+}
+
 // Opt-in diagnostic for a running local instance. It only reads plugin JSON
 // from the configured database and never modifies the schema or data.
 func TestLiveCodexPluginFrontendPages(t *testing.T) {

@@ -156,7 +156,12 @@ func (api *pluginAPI) frontendExtensions(c *gin.Context) {
 		if !pluginUserEnabled(plugin, states) || strings.TrimSpace(plugin.FrontendJSON) == "" {
 			continue
 		}
-		items = append(items, pluginListResponse(plugin, true))
+		item := pluginListResponse(plugin, true)
+		item.Frontend = filterPluginFrontendForUser(item.Frontend, user.IsAdmin)
+		if !pluginFrontendHasContent(item.Frontend) {
+			continue
+		}
+		items = append(items, item)
 	}
 	c.JSON(http.StatusOK, gin.H{"plugins": items})
 }
@@ -175,7 +180,9 @@ func (api *pluginAPI) getPlugin(c *gin.Context) {
 		c.JSON(http.StatusForbidden, gin.H{"error": "Plugin is disabled"})
 		return
 	}
-	c.JSON(http.StatusOK, pluginListResponse(plugin, true))
+	item := pluginListResponse(plugin, true)
+	item.Frontend = filterPluginFrontendForUser(item.Frontend, user.IsAdmin)
+	c.JSON(http.StatusOK, item)
 }
 
 func (api *pluginAPI) installPlugin(c *gin.Context) {
@@ -398,6 +405,9 @@ func (api *pluginAPI) getPluginSettings(c *gin.Context) {
 		c.JSON(http.StatusForbidden, gin.H{"error": "Plugin is disabled"})
 		return
 	}
+	if pluginUsesGlobalSettings(plugin) && !requirePluginAdmin(c, user) {
+		return
+	}
 	config := pluginConfigForUser(user.ID, plugin.ID)
 	c.JSON(http.StatusOK, gin.H{
 		"schema": json.RawMessage(nonEmptyJSON(plugin.SettingsJSON, "{}")),
@@ -596,6 +606,103 @@ func pluginListResponse(plugin model.Plugin, enabled bool) pluginListItem {
 	}
 }
 
+// filterPluginFrontendForUser removes frontend entries the current user is not
+// allowed to discover. Access defaults to "public"; "admin" entries are only
+// returned to administrators. The legacy "visibility" key is accepted as an
+// alias so older hand-written plugin manifests can adopt the rule gradually.
+func filterPluginFrontendForUser(raw json.RawMessage, isAdmin bool) json.RawMessage {
+	var frontend map[string]interface{}
+	if err := json.Unmarshal(raw, &frontend); err != nil || frontend == nil {
+		return raw
+	}
+
+	declaredRoutes := make(map[string]bool)
+	routeAccess := make(map[string]bool)
+	if routes, ok := frontend["routes"].([]interface{}); ok {
+		visibleRoutes := make([]interface{}, 0, len(routes))
+		for _, rawRoute := range routes {
+			route, ok := rawRoute.(map[string]interface{})
+			if !ok {
+				continue
+			}
+			path := pluginFrontendPath(stringFromValue(route["path"]))
+			declaredRoutes[path] = true
+			if !pluginFrontendEntryVisible(route, isAdmin) {
+				continue
+			}
+			visibleRoutes = append(visibleRoutes, route)
+			routeAccess[path] = true
+		}
+		frontend["routes"] = visibleRoutes
+	}
+
+	if sidebar, ok := frontend["sidebar"].([]interface{}); ok {
+		visibleSidebar := make([]interface{}, 0, len(sidebar))
+		for _, rawItem := range sidebar {
+			item, ok := rawItem.(map[string]interface{})
+			if !ok || !pluginFrontendEntryVisible(item, isAdmin) {
+				continue
+			}
+			path := pluginFrontendPath(stringFromValue(item["path"]))
+			if declaredRoutes[path] && !routeAccess[path] {
+				continue
+			}
+			if path == "" && len(declaredRoutes) > 0 && len(routeAccess) == 0 {
+				continue
+			}
+			visibleSidebar = append(visibleSidebar, item)
+		}
+		frontend["sidebar"] = visibleSidebar
+	}
+
+	encoded, err := json.Marshal(frontend)
+	if err != nil {
+		return raw
+	}
+	return encoded
+}
+
+func pluginFrontendHasContent(raw json.RawMessage) bool {
+	var frontend map[string]interface{}
+	if err := json.Unmarshal(raw, &frontend); err != nil || frontend == nil {
+		return false
+	}
+	if frontend["page"] != nil {
+		return true
+	}
+	for _, key := range []string{"routes", "sidebar"} {
+		if entries, ok := frontend[key].([]interface{}); ok && len(entries) > 0 {
+			return true
+		}
+	}
+	return false
+}
+
+func pluginFrontendEntryVisible(entry map[string]interface{}, isAdmin bool) bool {
+	access, _ := pluginFrontendEntryAccess(entry)
+	switch access {
+	case "", "public", "user":
+		return true
+	case "admin":
+		return isAdmin
+	default:
+		return false
+	}
+}
+
+func pluginFrontendEntryAccess(entry map[string]interface{}) (string, bool) {
+	for _, key := range []string{"access", "visibility"} {
+		if value, exists := entry[key]; exists {
+			return strings.ToLower(strings.TrimSpace(stringFromValue(value))), true
+		}
+	}
+	return "", false
+}
+
+func pluginFrontendPath(path string) string {
+	return strings.Trim(strings.TrimSpace(path), "/")
+}
+
 func userPluginStates(userID uint) map[string]bool {
 	var states []model.UserPluginState
 	_ = model.DB.Where("user_id = ?", userID).Find(&states).Error
@@ -749,6 +856,9 @@ func validatePluginManifest(manifest PluginManifest) error {
 			return errors.New("plugin permissions cannot contain empty values")
 		}
 	}
+	if err := validatePluginFrontendAccess(manifest.Frontend); err != nil {
+		return err
+	}
 	for _, hook := range manifest.Hooks {
 		if strings.TrimSpace(hook.Point) == "" {
 			return errors.New("plugin hook point is required")
@@ -806,6 +916,42 @@ func validatePluginManifest(manifest PluginManifest) error {
 			return fmt.Errorf("duplicate plugin upstream type id: %s", upstream.ID)
 		}
 		seenUpstreams[upstream.ID] = struct{}{}
+	}
+	return nil
+}
+
+func validatePluginFrontendAccess(raw json.RawMessage) error {
+	if len(raw) == 0 || strings.TrimSpace(string(raw)) == "null" {
+		return nil
+	}
+	var frontend map[string]interface{}
+	if err := json.Unmarshal(raw, &frontend); err != nil || frontend == nil {
+		return errors.New("plugin frontend must be a JSON object")
+	}
+	for _, key := range []string{"sidebar", "routes"} {
+		entries, exists := frontend[key]
+		if !exists {
+			continue
+		}
+		list, ok := entries.([]interface{})
+		if !ok {
+			return fmt.Errorf("plugin frontend %s must be an array", key)
+		}
+		for _, rawEntry := range list {
+			entry, ok := rawEntry.(map[string]interface{})
+			if !ok {
+				return fmt.Errorf("plugin frontend %s entries must be objects", key)
+			}
+			access, set := pluginFrontendEntryAccess(entry)
+			if !set {
+				continue
+			}
+			switch access {
+			case "public", "user", "admin":
+			default:
+				return fmt.Errorf("plugin frontend %s access must be public or admin", key)
+			}
+		}
 	}
 	return nil
 }
