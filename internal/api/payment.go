@@ -13,10 +13,10 @@ import (
 	"strings"
 	"time"
 
-	"github.com/veloce-ailab/veloce/internal/model"
-	"github.com/veloce-ailab/veloce/internal/service"
 	"github.com/gin-gonic/gin"
 	"github.com/shopspring/decimal"
+	"github.com/veloce-ailab/veloce/internal/model"
+	"github.com/veloce-ailab/veloce/internal/service"
 	"gorm.io/gorm"
 	"gorm.io/gorm/clause"
 )
@@ -553,35 +553,43 @@ func paymentConfigFromStoredChannel(base paymentConfig, channel storedPaymentCha
 	base.Provider = normalizePaymentProvider(channel.Provider)
 	base.Methods = channel.Methods
 	base.OfficialCurrency = normalizeOfficialCurrency(firstNonEmptyString(channel.Currency, base.OfficialCurrency))
-	base.GatewayURL = firstNonEmptyString(config["gateway_url"], base.GatewayURL)
-	base.PID = firstNonEmptyString(config["pid"], base.PID)
-	base.Key = firstNonEmptyString(config["key"], base.Key)
-	base.NotifyURL = firstNonEmptyString(config["notify_url"], base.NotifyURL)
-	base.ReturnURL = firstNonEmptyString(config["return_url"], base.ReturnURL)
-	base.OpenPaymentBaseURL = firstNonEmptyString(config["openpayment_base_url"], base.OpenPaymentBaseURL)
-	base.OpenPaymentConfigURL = firstNonEmptyString(config["openpayment_config_url"], base.OpenPaymentConfigURL)
-	base.OpenPaymentMerchantID = firstNonEmptyString(config["openpayment_merchant_id"], base.OpenPaymentMerchantID)
-	base.OpenPaymentKey = firstNonEmptyString(config["openpayment_key"], base.OpenPaymentKey)
-	base.WeChatMchID = firstNonEmptyString(config["wechat_mch_id"], base.WeChatMchID)
-	base.WeChatAppID = firstNonEmptyString(config["wechat_app_id"], base.WeChatAppID)
-	base.WeChatSerialNo = firstNonEmptyString(config["wechat_serial_no"], base.WeChatSerialNo)
-	base.WeChatPrivateKey = firstNonEmptyString(config["wechat_private_key"], base.WeChatPrivateKey)
-	base.WeChatPlatformCert = firstNonEmptyString(config["wechat_platform_certificate"], base.WeChatPlatformCert)
-	base.WeChatAPIV3Key = firstNonEmptyString(config["wechat_api_v3_key"], base.WeChatAPIV3Key)
-	base.AlipayAppID = firstNonEmptyString(config["alipay_app_id"], base.AlipayAppID)
-	base.AlipayPrivateKey = firstNonEmptyString(config["alipay_private_key"], base.AlipayPrivateKey)
-	base.AlipayPublicKey = firstNonEmptyString(config["alipay_public_key"], base.AlipayPublicKey)
-	base.AlipayGatewayURL = firstNonEmptyString(config["alipay_gateway_url"], base.AlipayGatewayURL)
-	base.PayPalClientID = firstNonEmptyString(config["paypal_client_id"], base.PayPalClientID)
-	base.PayPalClientSecret = firstNonEmptyString(config["paypal_client_secret"], base.PayPalClientSecret)
-	base.PayPalBaseURL = firstNonEmptyString(config["paypal_base_url"], base.PayPalBaseURL)
-	base.PayPalWebhookID = firstNonEmptyString(config["paypal_webhook_id"], base.PayPalWebhookID)
-	base.StripeSecretKey = firstNonEmptyString(config["stripe_secret_key"], base.StripeSecretKey)
-	base.StripeWebhookSecret = firstNonEmptyString(config["stripe_webhook_secret"], base.StripeWebhookSecret)
+	base.GatewayURL = configuredPaymentValue(config, "gateway_url", base.GatewayURL)
+	base.PID = configuredPaymentValue(config, "pid", base.PID)
+	base.Key = configuredPaymentValue(config, "key", base.Key)
+	base.NotifyURL = configuredPaymentValue(config, "notify_url", base.NotifyURL)
+	base.ReturnURL = configuredPaymentValue(config, "return_url", base.ReturnURL)
+	base.OpenPaymentBaseURL = configuredPaymentValue(config, "openpayment_base_url", base.OpenPaymentBaseURL)
+	base.OpenPaymentConfigURL = configuredPaymentValue(config, "openpayment_config_url", base.OpenPaymentConfigURL)
+	base.OpenPaymentMerchantID = configuredPaymentValue(config, "openpayment_merchant_id", base.OpenPaymentMerchantID)
+	base.OpenPaymentKey = configuredPaymentValue(config, "openpayment_key", base.OpenPaymentKey)
+	base.WeChatMchID = configuredPaymentValue(config, "wechat_mch_id", base.WeChatMchID)
+	base.WeChatAppID = configuredPaymentValue(config, "wechat_app_id", base.WeChatAppID)
+	base.WeChatSerialNo = configuredPaymentValue(config, "wechat_serial_no", base.WeChatSerialNo)
+	base.WeChatPrivateKey = configuredPaymentValue(config, "wechat_private_key", base.WeChatPrivateKey)
+	base.WeChatPlatformCert = configuredPaymentValue(config, "wechat_platform_certificate", base.WeChatPlatformCert)
+	base.WeChatAPIV3Key = configuredPaymentValue(config, "wechat_api_v3_key", base.WeChatAPIV3Key)
+	base.AlipayAppID = configuredPaymentValue(config, "alipay_app_id", base.AlipayAppID)
+	base.AlipayPrivateKey = configuredPaymentValue(config, "alipay_private_key", base.AlipayPrivateKey)
+	base.AlipayPublicKey = configuredPaymentValue(config, "alipay_public_key", base.AlipayPublicKey)
+	base.AlipayGatewayURL = configuredPaymentValue(config, "alipay_gateway_url", base.AlipayGatewayURL)
+	base.PayPalClientID = configuredPaymentValue(config, "paypal_client_id", base.PayPalClientID)
+	base.PayPalClientSecret = configuredPaymentValue(config, "paypal_client_secret", base.PayPalClientSecret)
+	base.PayPalBaseURL = configuredPaymentValue(config, "paypal_base_url", base.PayPalBaseURL)
+	base.PayPalWebhookID = configuredPaymentValue(config, "paypal_webhook_id", base.PayPalWebhookID)
+	base.StripeSecretKey = configuredPaymentValue(config, "stripe_secret_key", base.StripeSecretKey)
+	base.StripeWebhookSecret = configuredPaymentValue(config, "stripe_webhook_secret", base.StripeWebhookSecret)
 	if isOfficialPaymentProvider(base.Provider) {
 		base.Methods = []string{base.Provider}
 	}
 	return base
+}
+
+func configuredPaymentValue(config map[string]string, key, fallback string) string {
+	value, exists := config[key]
+	if !exists {
+		return fallback
+	}
+	return strings.TrimSpace(value)
 }
 
 func requirePaymentFeature(c *gin.Context) bool {
