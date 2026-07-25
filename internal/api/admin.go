@@ -518,6 +518,21 @@ func (api *SystemAPI) StartAutoUpdate(c *gin.Context) {
 	c.JSON(http.StatusAccepted, status)
 }
 
+func (api *SystemAPI) Restart(c *gin.Context) {
+	var input struct {
+		Confirmation string `json:"confirmation"`
+	}
+	if err := c.ShouldBindJSON(&input); err != nil || input.Confirmation != "确认重启" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "请输入“确认重启”以继续"})
+		return
+	}
+	if err := service.RequestApplicationRestart(); err != nil {
+		c.JSON(http.StatusConflict, gin.H{"error": err.Error()})
+		return
+	}
+	c.JSON(http.StatusAccepted, gin.H{"message": "服务正在重启"})
+}
+
 func (api *SystemAPI) DeleteLogs(c *gin.Context) {
 	deleted, err := model.DeleteLogs()
 	if err != nil {

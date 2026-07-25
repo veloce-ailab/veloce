@@ -13,6 +13,7 @@ import (
 	"net/url"
 	"path"
 	"strings"
+	"sync"
 	"time"
 
 	webui "github.com/WindyPear-Team/veloce-web"
@@ -588,6 +589,7 @@ func Run() error {
 		admin.GET("/updates", systemAPI.GetAutoUpdateStatus)
 		admin.POST("/updates/check", systemAPI.CheckForUpdate)
 		admin.POST("/updates/apply", systemAPI.StartAutoUpdate)
+		admin.POST("/restart", systemAPI.Restart)
 		admin.GET("/status-monitors", statusMonitorAPI.List)
 		admin.POST("/status-monitors", statusMonitorAPI.Create)
 		admin.PUT("/status-monitors/:id", statusMonitorAPI.Update)
@@ -819,20 +821,40 @@ func Run() error {
 		IdleTimeout:       120 * time.Second,
 	}
 
-	updateRestartDone := make(chan error, 1)
-	updater := service.NewAutoUpdateService()
-	service.RegisterAutoUpdateService(updater)
-	updater.Start(func(stagedBinary string) error {
+	restartDone := make(chan error, 1)
+	var restartState struct {
+		sync.Mutex
+		started bool
+	}
+	scheduleRestart := func(restart func() error) error {
+		restartState.Lock()
+		if restartState.started {
+			restartState.Unlock()
+			return errors.New("service restart is already in progress")
+		}
+		restartState.started = true
+		restartState.Unlock()
 		go func() {
+			// Let the accepted response reach the administrator before draining.
+			time.Sleep(200 * time.Millisecond)
 			shutdownCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 			defer cancel()
 			if err := server.Shutdown(shutdownCtx); err != nil {
-				updateRestartDone <- fmt.Errorf("stop server for update: %w", err)
+				restartDone <- fmt.Errorf("stop server for restart: %w", err)
 				return
 			}
-			updateRestartDone <- service.RestartWithStagedUpdate(stagedBinary)
+			restartDone <- restart()
 		}()
 		return nil
+	}
+	service.RegisterApplicationRestart(func() error {
+		return scheduleRestart(service.RestartCurrentProcess)
+	})
+	defer service.RegisterApplicationRestart(nil)
+	updater := service.NewAutoUpdateService()
+	service.RegisterAutoUpdateService(updater)
+	updater.Start(func(stagedBinary string) error {
+		return scheduleRestart(func() error { return service.RestartWithStagedUpdate(stagedBinary) })
 	})
 
 	err = server.ListenAndServe()
@@ -840,7 +862,7 @@ func Run() error {
 		return err
 	}
 	select {
-	case restartErr := <-updateRestartDone:
+	case restartErr := <-restartDone:
 		return restartErr
 	case <-time.After(35 * time.Second):
 		return errors.New("timed out while applying automatic update")
