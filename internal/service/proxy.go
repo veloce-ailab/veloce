@@ -1961,10 +1961,53 @@ func (s *ProxyService) doUpstreamRequest(prepared preparedUpstreamRequest, chann
 	for key, values := range prepared.Header {
 		req.Header[key] = values
 	}
-	client := &http.Client{Timeout: 60 * time.Second}
+	client := &http.Client{
+		Timeout: 60 * time.Second,
+		CheckRedirect: func(req *http.Request, via []*http.Request) error {
+			if err := ValidateConfiguredHTTPURL(req.URL.String()); err != nil {
+				return err
+			}
+			if len(via) > 0 && !sameUpstreamHost(via[0].URL, req.URL) {
+				removeUpstreamCredentials(req)
+			}
+			return nil
+		},
+	}
 	resp, err := client.Do(req)
 	recordUpstreamResult(channel, resp, err)
 	return resp, err
+}
+
+func sameUpstreamHost(left, right *url.URL) bool {
+	if left == nil || right == nil {
+		return false
+	}
+	return strings.EqualFold(left.Host, right.Host)
+}
+
+func removeUpstreamCredentials(req *http.Request) {
+	if req == nil {
+		return
+	}
+	for key := range req.Header {
+		if isUpstreamCredentialHeader(key) {
+			delete(req.Header, key)
+		}
+	}
+	query := req.URL.Query()
+	for _, key := range []string{"key", "api_key", "access_token"} {
+		query.Del(key)
+	}
+	req.URL.RawQuery = query.Encode()
+}
+
+func isUpstreamCredentialHeader(key string) bool {
+	switch strings.ToLower(key) {
+	case "authorization", "proxy-authorization", "x-api-key", "x-goog-api-key", "api-key":
+		return true
+	default:
+		return false
+	}
 }
 
 func rawProviderRequest(channel *model.Channel, protocol proxyProtocol, method, path string, body []byte, originalHeader http.Header) preparedUpstreamRequest {

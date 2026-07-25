@@ -3,8 +3,10 @@ package service
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"mime/multipart"
 	"net/http"
+	"net/http/httptest"
 	"reflect"
 	"strings"
 	"testing"
@@ -12,6 +14,77 @@ import (
 	"github.com/shopspring/decimal"
 	"github.com/veloce-ailab/veloce/internal/model"
 )
+
+func TestDoUpstreamRequestRejectsUnsafeRedirect(t *testing.T) {
+	redirectTarget := "http://127.0.0.1/internal"
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Redirect(w, r, redirectTarget, http.StatusFound)
+	}))
+	defer upstream.Close()
+
+	previousHooks := urlGuardHooks
+	defer RegisterURLGuardHooks(previousHooks)
+	RegisterURLGuardHooks(URLGuardHooks{
+		ValidateConfiguredHTTPURL: func(raw string) error {
+			if raw == redirectTarget {
+				return errors.New("unsafe redirect")
+			}
+			return nil
+		},
+	})
+
+	resp, err := NewProxyService().doUpstreamRequest(preparedUpstreamRequest{
+		Method: http.MethodGet,
+		URL:    upstream.URL,
+	}, &model.Channel{})
+	if err == nil {
+		if resp != nil && resp.Body != nil {
+			resp.Body.Close()
+		}
+		t.Fatal("expected unsafe redirect to be rejected")
+	}
+}
+
+func TestDoUpstreamRequestRemovesCredentialsOnCrossHostRedirect(t *testing.T) {
+	var received http.Header
+	redirectTarget := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		received = r.Header.Clone()
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	defer redirectTarget.Close()
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Redirect(w, r, redirectTarget.URL, http.StatusFound)
+	}))
+	defer upstream.Close()
+
+	previousHooks := urlGuardHooks
+	defer RegisterURLGuardHooks(previousHooks)
+	RegisterURLGuardHooks(URLGuardHooks{ValidateConfiguredHTTPURL: func(string) error { return nil }})
+
+	resp, err := NewProxyService().doUpstreamRequest(preparedUpstreamRequest{
+		Method: http.MethodGet,
+		URL:    upstream.URL + "?key=channel-key",
+		Header: http.Header{
+			"Authorization":       []string{"Bearer channel-key"},
+			"X-API-Key":           []string{"channel-key"},
+			"X-Goog-API-Key":      []string{"channel-key"},
+			"API-Key":             []string{"channel-key"},
+			"Proxy-Authorization": []string{"Basic channel-key"},
+		},
+	}, &model.Channel{})
+	if err != nil {
+		t.Fatalf("doUpstreamRequest returned error: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusNoContent {
+		t.Fatalf("response status = %d, want %d", resp.StatusCode, http.StatusNoContent)
+	}
+	for _, key := range []string{"Authorization", "X-API-Key", "X-Goog-API-Key", "API-Key", "Proxy-Authorization"} {
+		if received.Get(key) != "" {
+			t.Fatalf("redirect target received %s: %q", key, received.Get(key))
+		}
+	}
+}
 
 func TestResponsesProxyPreservesFunctionCallHistory(t *testing.T) {
 	requestBody := map[string]interface{}{
