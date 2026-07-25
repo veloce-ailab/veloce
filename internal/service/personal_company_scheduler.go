@@ -6,7 +6,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/WindyPear-Team/veloce/internal/model"
+	"github.com/veloce-ailab/veloce/internal/model"
 	"gorm.io/gorm"
 )
 

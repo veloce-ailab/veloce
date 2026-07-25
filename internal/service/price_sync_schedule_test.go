@@ -4,7 +4,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/WindyPear-Team/veloce/internal/model"
+	"github.com/veloce-ailab/veloce/internal/model"
 )
 
 func TestValidatePriceSyncCron(t *testing.T) {

@@ -6,7 +6,7 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/WindyPear-Team/veloce/internal/model"
+	"github.com/veloce-ailab/veloce/internal/model"
 	"github.com/gin-gonic/gin"
 	"gorm.io/gorm"
 )

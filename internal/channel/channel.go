@@ -12,8 +12,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/WindyPear-Team/veloce/internal/model"
-	communityservice "github.com/WindyPear-Team/veloce/internal/service"
+	"github.com/veloce-ailab/veloce/internal/model"
+	communityservice "github.com/veloce-ailab/veloce/internal/service"
 	"github.com/gin-gonic/gin"
 	"gorm.io/gorm"
 )

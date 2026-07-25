@@ -3,7 +3,7 @@ package api
 import (
 	"testing"
 
-	"github.com/WindyPear-Team/veloce/internal/service"
+	"github.com/veloce-ailab/veloce/internal/service"
 	"github.com/shopspring/decimal"
 )
 

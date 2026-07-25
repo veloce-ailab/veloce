@@ -3,7 +3,7 @@ package main
 import (
 	"log"
 
-	"github.com/WindyPear-Team/veloce/internal/app"
+	"github.com/veloce-ailab/veloce/internal/app"
 )
 
 func main() {

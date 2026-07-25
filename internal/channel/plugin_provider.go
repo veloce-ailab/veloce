@@ -6,7 +6,7 @@ import (
 	"strings"
 	"time"
 
-	communityservice "github.com/WindyPear-Team/veloce/internal/service"
+	communityservice "github.com/veloce-ailab/veloce/internal/service"
 )
 
 type pluginChannelProvider struct{ descriptor pluginChannelDescriptor }

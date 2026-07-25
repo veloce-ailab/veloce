@@ -12,7 +12,7 @@ import (
 	"strings"
 	"time"
 
-	communityservice "github.com/WindyPear-Team/veloce/internal/service"
+	communityservice "github.com/veloce-ailab/veloce/internal/service"
 	"github.com/gin-gonic/gin"
 	qrcode "github.com/skip2/go-qrcode"
 )

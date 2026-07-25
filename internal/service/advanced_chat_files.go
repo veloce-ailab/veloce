@@ -22,8 +22,8 @@ import (
 	"time"
 	"unicode/utf8"
 
-	"github.com/WindyPear-Team/veloce/internal/config"
-	"github.com/WindyPear-Team/veloce/internal/model"
+	"github.com/veloce-ailab/veloce/internal/config"
+	"github.com/veloce-ailab/veloce/internal/model"
 	"github.com/gin-gonic/gin"
 	"gorm.io/gorm"
 )

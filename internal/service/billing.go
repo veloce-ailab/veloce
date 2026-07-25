@@ -1,7 +1,7 @@
 package service
 
 import (
-	"github.com/WindyPear-Team/veloce/internal/model"
+	"github.com/veloce-ailab/veloce/internal/model"
 	"github.com/pkoukk/tiktoken-go"
 	"github.com/shopspring/decimal"
 )

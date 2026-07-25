@@ -5,8 +5,8 @@ import (
 	"os"
 	"testing"
 
-	"github.com/WindyPear-Team/veloce/internal/config"
-	"github.com/WindyPear-Team/veloce/internal/model"
+	"github.com/veloce-ailab/veloce/internal/config"
+	"github.com/veloce-ailab/veloce/internal/model"
 	"gorm.io/driver/postgres"
 	"gorm.io/gorm"
 )

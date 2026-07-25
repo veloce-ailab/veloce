@@ -14,8 +14,8 @@ import (
 	"sync"
 	"time"
 
-	"github.com/WindyPear-Team/veloce/internal/config"
-	"github.com/WindyPear-Team/veloce/internal/model"
+	"github.com/veloce-ailab/veloce/internal/config"
+	"github.com/veloce-ailab/veloce/internal/model"
 	"github.com/coreos/go-oidc/v3/oidc"
 	"github.com/golang-jwt/jwt/v5"
 	"golang.org/x/oauth2"

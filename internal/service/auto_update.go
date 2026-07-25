@@ -22,7 +22,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/WindyPear-Team/veloce/internal/model"
+	"github.com/veloce-ailab/veloce/internal/model"
 )
 
 const (
@@ -30,10 +30,10 @@ const (
 	autoUpdateMaxBinary  = 256 << 20 // 256 MiB
 )
 
-var autoUpdateRepositoryURL = "https://api.github.com/repos/WindyPear-Team/veloce/releases/latest"
+var autoUpdateRepositoryURL = "https://api.github.com/repos/veloce-ailab/veloce/releases/latest"
 
 // BuildVersion is set by release builds with:
-// -ldflags "-X github.com/WindyPear-Team/veloce/internal/service.BuildVersion=vX.Y.Z"
+// -ldflags "-X github.com/veloce-ailab/veloce/internal/service.BuildVersion=vX.Y.Z"
 // Development builds deliberately remain non-updatable.
 var BuildVersion = "dev"
 

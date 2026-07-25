@@ -16,7 +16,7 @@ permissions:
   contents: write
 
 env:
-  WEB_REPOSITORY: WindyPear-Team/windypear-api-frontend
+  WEB_REPOSITORY: veloce-ailab/windypear-api-frontend
 
 jobs:
   build:
@@ -95,7 +95,7 @@ jobs:
           GOARCH: ${{ matrix.goarch }}
         run: |
           mkdir -p ../out
-          go build -buildvcs=false -trimpath -ldflags="-s -w -X github.com/WindyPear-Team/veloce/internal/service.BuildVersion=${{ github.ref_name }}" -o "../out/flai-community-${{ github.ref_name }}-${{ matrix.goos }}-${{ matrix.goarch }}${{ matrix.ext }}" .
+          go build -buildvcs=false -trimpath -ldflags="-s -w -X github.com/veloce-ailab/veloce/internal/service.BuildVersion=${{ github.ref_name }}" -o "../out/flai-community-${{ github.ref_name }}-${{ matrix.goos }}-${{ matrix.goarch }}${{ matrix.ext }}" .
 
       - name: Package artifact
         working-directory: out

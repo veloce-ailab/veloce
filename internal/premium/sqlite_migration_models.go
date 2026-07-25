@@ -1,6 +1,6 @@
 package premium
 
-import "github.com/WindyPear-Team/veloce/internal/model"
+import "github.com/veloce-ailab/veloce/internal/model"
 
 func init() {
 	model.RegisterSQLiteMigrationModels(

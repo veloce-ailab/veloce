@@ -9,7 +9,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/WindyPear-Team/veloce/internal/config"
+	"github.com/veloce-ailab/veloce/internal/config"
 	"github.com/glebarez/sqlite"
 	"github.com/shopspring/decimal"
 	"gorm.io/driver/mysql"

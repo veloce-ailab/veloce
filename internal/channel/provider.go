@@ -13,8 +13,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/WindyPear-Team/veloce/internal/model"
-	communityservice "github.com/WindyPear-Team/veloce/internal/service"
+	"github.com/veloce-ailab/veloce/internal/model"
+	communityservice "github.com/veloce-ailab/veloce/internal/service"
 )
 
 var providerHTTPClient = &http.Client{Timeout: 15 * time.Second}

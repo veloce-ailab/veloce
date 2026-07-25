@@ -6,8 +6,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/WindyPear-Team/veloce/internal/model"
-	"github.com/WindyPear-Team/veloce/internal/service"
+	"github.com/veloce-ailab/veloce/internal/model"
+	"github.com/veloce-ailab/veloce/internal/service"
 	"github.com/gin-gonic/gin"
 )
 
