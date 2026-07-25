@@ -5,12 +5,71 @@ import (
 	"encoding/json"
 	"mime/multipart"
 	"net/http"
+	"reflect"
 	"strings"
 	"testing"
 
 	"github.com/WindyPear-Team/veloce/internal/model"
 	"github.com/shopspring/decimal"
 )
+
+func TestResponsesProxyPreservesFunctionCallHistory(t *testing.T) {
+	requestBody := map[string]interface{}{
+		"model": "gpt-5",
+		"input": []interface{}{
+			map[string]interface{}{"role": "user", "content": "查询天气"},
+			map[string]interface{}{"type": "function_call", "call_id": "call_weather", "name": "weather", "arguments": `{"city":"Shanghai"}`},
+			map[string]interface{}{"type": "function_call_output", "call_id": "call_weather", "output": `{"temperature":30}`},
+		},
+	}
+
+	normalized := normalizeOpenAIRequest("/v1/responses", requestBody, "upstream-model")
+	payload, err := openAIResponsesPayloadMap(normalized)
+	if err != nil {
+		t.Fatal(err)
+	}
+	input := payload["input"].([]map[string]interface{})
+	if len(input) != 3 {
+		t.Fatalf("input count = %d, want 3", len(input))
+	}
+	if !reflect.DeepEqual(input[1], requestBody["input"].([]interface{})[1]) {
+		t.Fatalf("function call was changed: %#v", input[1])
+	}
+	if !reflect.DeepEqual(input[2], requestBody["input"].([]interface{})[2]) {
+		t.Fatalf("function output was changed: %#v", input[2])
+	}
+}
+
+func TestChatToolHistoryConvertsToResponsesInput(t *testing.T) {
+	requestBody := map[string]interface{}{
+		"model": "gpt-5",
+		"messages": []interface{}{
+			map[string]interface{}{"role": "user", "content": "查询天气"},
+			map[string]interface{}{
+				"role":       "assistant",
+				"content":    "",
+				"tool_calls": []interface{}{map[string]interface{}{"id": "call_weather", "type": "function", "function": map[string]interface{}{"name": "weather", "arguments": `{"city":"Shanghai"}`}}},
+			},
+			map[string]interface{}{"role": "tool", "tool_call_id": "call_weather", "content": `{"temperature":30}`},
+		},
+	}
+
+	normalized := normalizeOpenAIRequest("/v1/chat/completions", requestBody, "upstream-model")
+	payload, err := openAIResponsesPayloadMap(normalized)
+	if err != nil {
+		t.Fatal(err)
+	}
+	input := payload["input"].([]map[string]interface{})
+	if len(input) != 3 {
+		t.Fatalf("input count = %d, want 3", len(input))
+	}
+	if !reflect.DeepEqual(input[1], map[string]interface{}{"type": "function_call", "call_id": "call_weather", "name": "weather", "arguments": `{"city":"Shanghai"}`}) {
+		t.Fatalf("function call = %#v", input[1])
+	}
+	if !reflect.DeepEqual(input[2], map[string]interface{}{"type": "function_call_output", "call_id": "call_weather", "output": `{"temperature":30}`}) {
+		t.Fatalf("function output = %#v", input[2])
+	}
+}
 
 func TestRawProviderRequestKeepsClaudeMessagesEndpoint(t *testing.T) {
 	channel := &model.Channel{BaseURL: "https://anyrouter.top", APIKey: "upstream-key"}

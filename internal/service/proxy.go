@@ -80,20 +80,22 @@ type proxyTarget struct {
 }
 
 type normalizedAIRequest struct {
-	Model       string
-	Messages    []normalizedAIMessage
-	System      string
-	MaxTokens   int
-	Temperature *float64
-	Stream      bool
-	Tools       []interface{}
-	ToolChoice  interface{}
+	Model          string
+	Messages       []normalizedAIMessage
+	ResponsesInput []map[string]interface{}
+	System         string
+	MaxTokens      int
+	Temperature    *float64
+	Stream         bool
+	Tools          []interface{}
+	ToolChoice     interface{}
 }
 
 type normalizedAIMessage struct {
-	Role      string
-	Content   string
-	ToolCalls []interface{}
+	Role       string
+	Content    string
+	ToolCalls  []interface{}
+	ToolCallID string
 }
 
 type preparedUpstreamRequest struct {
@@ -2403,23 +2405,25 @@ func normalizeOpenAIRequest(path string, requestBody map[string]interface{}, mod
 	}
 	if isResponsesPath(path) {
 		input := normalizeResponsesInput(requestBody["input"])
+		normalized.ResponsesInput = input
 		for _, item := range input {
-			addNormalizedMessage(&normalized, responseInputRole(stringFromValue(item["role"])), contentToText(item["content"]), item["tool_calls"])
+			addNormalizedMessage(&normalized, responseInputRole(stringFromValue(item["role"])), contentToText(item["content"]), item["tool_calls"], stringFromValue(item["tool_call_id"]))
 		}
 		return normalized
 	}
 	if messages, ok := requestBody["messages"].([]interface{}); ok {
+		normalized.ResponsesInput = messagesToResponsesInput(messages)
 		for _, raw := range messages {
 			item, ok := raw.(map[string]interface{})
 			if !ok {
 				continue
 			}
-			addNormalizedMessage(&normalized, stringFromValue(item["role"]), contentToText(item["content"]), item["tool_calls"])
+			addNormalizedMessage(&normalized, stringFromValue(item["role"]), contentToText(item["content"]), item["tool_calls"], stringFromValue(item["tool_call_id"]))
 		}
 		return normalized
 	}
 	if prompt := contentToText(requestBody["prompt"]); strings.TrimSpace(prompt) != "" {
-		addNormalizedMessage(&normalized, "user", prompt, nil)
+		addNormalizedMessage(&normalized, "user", prompt, nil, "")
 	}
 	return normalized
 }
@@ -2440,7 +2444,7 @@ func normalizeClaudeRequest(requestBody map[string]interface{}, modelName string
 			if !ok {
 				continue
 			}
-			addNormalizedMessage(&normalized, stringFromValue(item["role"]), contentToText(item["content"]), item["tool_calls"])
+			addNormalizedMessage(&normalized, stringFromValue(item["role"]), contentToText(item["content"]), item["tool_calls"], stringFromValue(item["tool_call_id"]))
 		}
 	}
 	return normalized
@@ -2467,15 +2471,15 @@ func normalizeGeminiRequest(requestBody map[string]interface{}, modelName string
 			if strings.EqualFold(stringFromValue(item["role"]), "model") {
 				role = "assistant"
 			}
-			addNormalizedMessage(&normalized, role, geminiPartsText(item["parts"]), item["tool_calls"])
+			addNormalizedMessage(&normalized, role, geminiPartsText(item["parts"]), item["tool_calls"], stringFromValue(item["tool_call_id"]))
 		}
 	} else if text := contentToText(requestBody["contents"]); strings.TrimSpace(text) != "" {
-		addNormalizedMessage(&normalized, "user", text, nil)
+		addNormalizedMessage(&normalized, "user", text, nil, "")
 	}
 	return normalized
 }
 
-func addNormalizedMessage(request *normalizedAIRequest, role string, content string, toolCalls interface{}) {
+func addNormalizedMessage(request *normalizedAIRequest, role string, content string, toolCalls interface{}, toolCallID string) {
 	content = strings.TrimSpace(content)
 	toolCallsSlice, _ := toolCalls.([]interface{})
 	if content == "" && len(toolCallsSlice) == 0 {
@@ -2489,6 +2493,8 @@ func addNormalizedMessage(request *normalizedAIRequest, role string, content str
 		request.System += content
 	case "assistant", "model":
 		request.Messages = append(request.Messages, normalizedAIMessage{Role: "assistant", Content: content, ToolCalls: toolCallsSlice})
+	case "tool":
+		request.Messages = append(request.Messages, normalizedAIMessage{Role: "tool", Content: content, ToolCalls: toolCallsSlice, ToolCallID: toolCallID})
 	default:
 		request.Messages = append(request.Messages, normalizedAIMessage{Role: "user", Content: content, ToolCalls: toolCallsSlice})
 	}
@@ -2511,6 +2517,9 @@ func openAIChatCompletionsPayloadMap(request normalizedAIRequest) (map[string]in
 		msg := map[string]interface{}{"role": message.Role, "content": message.Content}
 		if len(message.ToolCalls) > 0 {
 			msg["tool_calls"] = message.ToolCalls
+		}
+		if message.Role == "tool" && strings.TrimSpace(message.ToolCallID) != "" {
+			msg["tool_call_id"] = message.ToolCallID
 		}
 		messages = append(messages, msg)
 	}
@@ -2548,16 +2557,22 @@ func openAIResponsesPayload(request normalizedAIRequest) ([]byte, error) {
 }
 
 func openAIResponsesPayloadMap(request normalizedAIRequest) (map[string]interface{}, error) {
-	input := make([]map[string]interface{}, 0, len(request.Messages)+1)
-	if strings.TrimSpace(request.System) != "" {
-		input = append(input, map[string]interface{}{"role": "system", "content": request.System})
-	}
-	for _, message := range request.Messages {
-		msg := map[string]interface{}{"role": message.Role, "content": message.Content}
-		if len(message.ToolCalls) > 0 {
-			msg["tool_calls"] = message.ToolCalls
+	input := request.ResponsesInput
+	if len(input) == 0 {
+		input = make([]map[string]interface{}, 0, len(request.Messages)+1)
+		if strings.TrimSpace(request.System) != "" {
+			input = append(input, map[string]interface{}{"role": "system", "content": request.System})
 		}
-		input = append(input, msg)
+		for _, message := range request.Messages {
+			msg := map[string]interface{}{"role": message.Role, "content": message.Content}
+			if len(message.ToolCalls) > 0 {
+				msg["tool_calls"] = message.ToolCalls
+			}
+			if message.Role == "tool" && strings.TrimSpace(message.ToolCallID) != "" {
+				msg["tool_call_id"] = message.ToolCallID
+			}
+			input = append(input, msg)
+		}
 	}
 	if len(input) == 0 {
 		return nil, errors.New("input is required")
@@ -3434,6 +3449,11 @@ func normalizeResponsesInput(input interface{}) []map[string]interface{} {
 			}
 		}
 		return items
+	case map[string]interface{}:
+		if item, ok := responseInputItem(value); ok {
+			return []map[string]interface{}{item}
+		}
+		return []map[string]interface{}{}
 	case string:
 		if strings.TrimSpace(value) == "" {
 			return []map[string]interface{}{}
@@ -3449,13 +3469,37 @@ func normalizeResponsesInput(input interface{}) []map[string]interface{} {
 }
 
 func messagesToResponsesInput(messages []interface{}) []map[string]interface{} {
-	items := make([]map[string]interface{}, 0, len(messages))
+	items := make([]map[string]interface{}, 0, len(messages)+1)
 	for _, raw := range messages {
-		item, ok := responseInputItem(raw)
+		message, ok := raw.(map[string]interface{})
 		if !ok {
+			if item, ok := responseInputItem(raw); ok {
+				items = append(items, item)
+			}
 			continue
 		}
-		items = append(items, item)
+
+		if itemType := strings.TrimSpace(stringFromValue(message["type"])); itemType != "" {
+			items = append(items, message)
+			continue
+		}
+
+		role := strings.ToLower(strings.TrimSpace(stringFromValue(message["role"])))
+		if role == "tool" {
+			callID := strings.TrimSpace(stringFromValue(message["tool_call_id"]))
+			output := contentToText(message["content"])
+			if callID != "" && output != "" {
+				items = append(items, map[string]interface{}{"type": "function_call_output", "call_id": callID, "output": output})
+			}
+			continue
+		}
+
+		if item, ok := responseInputItem(message); ok {
+			items = append(items, item)
+		}
+		if role == "assistant" {
+			items = append(items, chatToolCallsToResponsesInput(message["tool_calls"])...)
+		}
 	}
 	return items
 }
@@ -3469,6 +3513,9 @@ func responseInputItem(raw interface{}) (map[string]interface{}, bool) {
 		}
 		return map[string]interface{}{"role": "user", "content": text}, true
 	}
+	if strings.TrimSpace(stringFromValue(item["type"])) != "" {
+		return item, true
+	}
 	role, _ := item["role"].(string)
 	content := contentToText(item["content"])
 	if strings.TrimSpace(content) == "" {
@@ -3478,6 +3525,43 @@ func responseInputItem(raw interface{}) (map[string]interface{}, bool) {
 		return nil, false
 	}
 	return map[string]interface{}{"role": responseInputRole(role), "content": content}, true
+}
+
+func chatToolCallsToResponsesInput(raw interface{}) []map[string]interface{} {
+	toolCalls, _ := raw.([]interface{})
+	items := make([]map[string]interface{}, 0, len(toolCalls))
+	for _, rawCall := range toolCalls {
+		toolCall, ok := rawCall.(map[string]interface{})
+		if !ok {
+			continue
+		}
+		callID := responseFirstNonEmptyString(toolCall["id"], toolCall["call_id"])
+		function, _ := toolCall["function"].(map[string]interface{})
+		name := strings.TrimSpace(stringFromValue(toolCall["name"]))
+		arguments := toolCall["arguments"]
+		if function != nil {
+			if name == "" {
+				name = strings.TrimSpace(stringFromValue(function["name"]))
+			}
+			if arguments == nil {
+				arguments = function["arguments"]
+			}
+		}
+		if callID == "" || name == "" || arguments == nil {
+			continue
+		}
+		items = append(items, map[string]interface{}{"type": "function_call", "call_id": callID, "name": name, "arguments": arguments})
+	}
+	return items
+}
+
+func responseFirstNonEmptyString(values ...interface{}) string {
+	for _, value := range values {
+		if text := strings.TrimSpace(stringFromValue(value)); text != "" {
+			return text
+		}
+	}
+	return ""
 }
 
 func responseInputRole(role string) string {
