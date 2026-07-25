@@ -86,11 +86,14 @@ type normalizedAIRequest struct {
 	MaxTokens   int
 	Temperature *float64
 	Stream      bool
+	Tools       []interface{}
+	ToolChoice  interface{}
 }
 
 type normalizedAIMessage struct {
-	Role    string
-	Content string
+	Role      string
+	Content   string
+	ToolCalls []interface{}
 }
 
 type preparedUpstreamRequest struct {
@@ -104,6 +107,7 @@ type preparedUpstreamRequest struct {
 type providerResponseData struct {
 	ID                      string
 	Text                    string
+	ToolCalls               []interface{}
 	InputTokens             int
 	OutputTokens            int
 	CachedInputTokens       int
@@ -2394,11 +2398,13 @@ func normalizeOpenAIRequest(path string, requestBody map[string]interface{}, mod
 		MaxTokens:   intFromRequest(requestBody, "max_tokens", "max_completion_tokens"),
 		Temperature: floatPtrFromRequest(requestBody, "temperature"),
 		Stream:      isStreamingRequest(requestBody),
+		Tools:       interfaceSliceFromRequest(requestBody, "tools"),
+		ToolChoice:  requestBody["tool_choice"],
 	}
 	if isResponsesPath(path) {
 		input := normalizeResponsesInput(requestBody["input"])
 		for _, item := range input {
-			addNormalizedMessage(&normalized, responseInputRole(stringFromValue(item["role"])), contentToText(item["content"]))
+			addNormalizedMessage(&normalized, responseInputRole(stringFromValue(item["role"])), contentToText(item["content"]), item["tool_calls"])
 		}
 		return normalized
 	}
@@ -2408,12 +2414,12 @@ func normalizeOpenAIRequest(path string, requestBody map[string]interface{}, mod
 			if !ok {
 				continue
 			}
-			addNormalizedMessage(&normalized, stringFromValue(item["role"]), contentToText(item["content"]))
+			addNormalizedMessage(&normalized, stringFromValue(item["role"]), contentToText(item["content"]), item["tool_calls"])
 		}
 		return normalized
 	}
 	if prompt := contentToText(requestBody["prompt"]); strings.TrimSpace(prompt) != "" {
-		addNormalizedMessage(&normalized, "user", prompt)
+		addNormalizedMessage(&normalized, "user", prompt, nil)
 	}
 	return normalized
 }
@@ -2425,6 +2431,8 @@ func normalizeClaudeRequest(requestBody map[string]interface{}, modelName string
 		MaxTokens:   intFromRequest(requestBody, "max_tokens"),
 		Temperature: floatPtrFromRequest(requestBody, "temperature"),
 		Stream:      isStreamingRequest(requestBody),
+		Tools:       interfaceSliceFromRequest(requestBody, "tools"),
+		ToolChoice:  requestBody["tool_choice"],
 	}
 	if messages, ok := requestBody["messages"].([]interface{}); ok {
 		for _, raw := range messages {
@@ -2432,7 +2440,7 @@ func normalizeClaudeRequest(requestBody map[string]interface{}, modelName string
 			if !ok {
 				continue
 			}
-			addNormalizedMessage(&normalized, stringFromValue(item["role"]), contentToText(item["content"]))
+			addNormalizedMessage(&normalized, stringFromValue(item["role"]), contentToText(item["content"]), item["tool_calls"])
 		}
 	}
 	return normalized
@@ -2463,9 +2471,10 @@ func normalizeGeminiRequest(requestBody map[string]interface{}, modelName string
 	return normalized
 }
 
-func addNormalizedMessage(request *normalizedAIRequest, role string, content string) {
+func addNormalizedMessage(request *normalizedAIRequest, role string, content string, toolCalls interface{}) {
 	content = strings.TrimSpace(content)
-	if content == "" {
+	toolCallsSlice, _ := toolCalls.([]interface{})
+	if content == "" && len(toolCallsSlice) == 0 {
 		return
 	}
 	switch strings.ToLower(strings.TrimSpace(role)) {
@@ -2475,9 +2484,9 @@ func addNormalizedMessage(request *normalizedAIRequest, role string, content str
 		}
 		request.System += content
 	case "assistant", "model":
-		request.Messages = append(request.Messages, normalizedAIMessage{Role: "assistant", Content: content})
+		request.Messages = append(request.Messages, normalizedAIMessage{Role: "assistant", Content: content, ToolCalls: toolCallsSlice})
 	default:
-		request.Messages = append(request.Messages, normalizedAIMessage{Role: "user", Content: content})
+		request.Messages = append(request.Messages, normalizedAIMessage{Role: "user", Content: content, ToolCalls: toolCallsSlice})
 	}
 }
 
@@ -2495,7 +2504,11 @@ func openAIChatCompletionsPayloadMap(request normalizedAIRequest) (map[string]in
 		messages = append(messages, map[string]interface{}{"role": "system", "content": request.System})
 	}
 	for _, message := range request.Messages {
-		messages = append(messages, map[string]interface{}{"role": message.Role, "content": message.Content})
+		msg := map[string]interface{}{"role": message.Role, "content": message.Content}
+		if len(message.ToolCalls) > 0 {
+			msg["tool_calls"] = message.ToolCalls
+		}
+		messages = append(messages, msg)
 	}
 	if len(messages) == 0 {
 		return nil, errors.New("messages are required")
@@ -2512,6 +2525,12 @@ func openAIChatCompletionsPayloadMap(request normalizedAIRequest) (map[string]in
 	}
 	if request.Stream {
 		payload["stream"] = true
+	}
+	if len(request.Tools) > 0 {
+		payload["tools"] = request.Tools
+	}
+	if request.ToolChoice != nil {
+		payload["tool_choice"] = request.ToolChoice
 	}
 	return payload, nil
 }
@@ -2530,7 +2549,11 @@ func openAIResponsesPayloadMap(request normalizedAIRequest) (map[string]interfac
 		input = append(input, map[string]interface{}{"role": "system", "content": request.System})
 	}
 	for _, message := range request.Messages {
-		input = append(input, map[string]interface{}{"role": message.Role, "content": message.Content})
+		msg := map[string]interface{}{"role": message.Role, "content": message.Content}
+		if len(message.ToolCalls) > 0 {
+			msg["tool_calls"] = message.ToolCalls
+		}
+		input = append(input, msg)
 	}
 	if len(input) == 0 {
 		return nil, errors.New("input is required")
@@ -2547,6 +2570,12 @@ func openAIResponsesPayloadMap(request normalizedAIRequest) (map[string]interfac
 	}
 	if request.Stream {
 		payload["stream"] = true
+	}
+	if len(request.Tools) > 0 {
+		payload["tools"] = request.Tools
+	}
+	if request.ToolChoice != nil {
+		payload["tool_choice"] = request.ToolChoice
 	}
 	return payload, nil
 }
@@ -2659,9 +2688,18 @@ func providerResponseFromPayload(payload map[string]interface{}, protocol proxyP
 
 func providerResponseFromOpenAI(payload map[string]interface{}) providerResponseData {
 	usage, _ := parseUsageTokens(payload)
+	var toolCalls []interface{}
+	if choices, ok := payload["choices"].([]interface{}); ok && len(choices) > 0 {
+		if choice, ok := choices[0].(map[string]interface{}); ok {
+			if message, ok := choice["message"].(map[string]interface{}); ok {
+				toolCalls, _ = message["tool_calls"].([]interface{})
+			}
+		}
+	}
 	return providerResponseData{
 		ID:                      stringFromValue(payload["id"]),
 		Text:                    openAIResponseText(payload),
+		ToolCalls:               toolCalls,
 		InputTokens:             usage.InputTokens,
 		OutputTokens:            usage.OutputTokens,
 		CachedInputTokens:       usage.CachedInputTokens,
@@ -2734,6 +2772,15 @@ func providerResponseFromGemini(payload map[string]interface{}) providerResponse
 }
 
 func openAIChatBody(data providerResponseData, modelName string) map[string]interface{} {
+	message := map[string]interface{}{
+		"role":    "assistant",
+		"content": data.Text,
+	}
+	finishReason := "stop"
+	if len(data.ToolCalls) > 0 {
+		message["tool_calls"] = data.ToolCalls
+		finishReason = "tool_calls"
+	}
 	return map[string]interface{}{
 		"id":      fallbackID(data.ID, "chatcmpl"),
 		"object":  "chat.completion",
@@ -2741,17 +2788,32 @@ func openAIChatBody(data providerResponseData, modelName string) map[string]inte
 		"model":   modelName,
 		"choices": []map[string]interface{}{{
 			"index":         0,
-			"finish_reason": "stop",
-			"message": map[string]interface{}{
-				"role":    "assistant",
-				"content": data.Text,
-			},
+			"finish_reason": finishReason,
+			"message":       message,
 		}},
 		"usage": openAIUsage(data),
 	}
 }
 
 func openAIResponsesBody(data providerResponseData, modelName string) map[string]interface{} {
+	content := []map[string]interface{}{{
+		"type": "output_text",
+		"text": data.Text,
+	}}
+	if len(data.ToolCalls) > 0 {
+		for _, tc := range data.ToolCalls {
+			if toolCall, ok := tc.(map[string]interface{}); ok {
+				content = append(content, map[string]interface{}{
+					"type": "tool_call",
+					"tool_call": map[string]interface{}{
+						"id":   toolCall["id"],
+						"name": toolCall["function"].(map[string]interface{})["name"],
+						"args": toolCall["function"].(map[string]interface{})["arguments"],
+					},
+				})
+			}
+		}
+	}
 	return map[string]interface{}{
 		"id":          fallbackID(data.ID, "resp"),
 		"object":      "response",
@@ -2759,12 +2821,9 @@ func openAIResponsesBody(data providerResponseData, modelName string) map[string
 		"model":       modelName,
 		"output_text": data.Text,
 		"output": []map[string]interface{}{{
-			"type": "message",
-			"role": "assistant",
-			"content": []map[string]interface{}{{
-				"type": "output_text",
-				"text": data.Text,
-			}},
+			"type":    "message",
+			"role":    "assistant",
+			"content": content,
 		}},
 		"usage": map[string]interface{}{
 			"input_tokens":  data.InputTokens,
@@ -3776,4 +3835,11 @@ func shouldSkipProxyResponseHeader(key string, streaming bool) bool {
 	default:
 		return false
 	}
+}
+
+func interfaceSliceFromRequest(requestBody map[string]interface{}, key string) []interface{} {
+	if value, ok := requestBody[key].([]interface{}); ok {
+		return value
+	}
+	return nil
 }
