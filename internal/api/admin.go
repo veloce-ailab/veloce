@@ -3562,11 +3562,16 @@ func modelFromInput(input modelConfigInput, existing *model.Model) (model.Model,
 		globalModel.ModelName = modelName
 	}
 
-	provider := service.ResolveModelProvider(globalModel.ModelName, input.Provider, input.ProviderIconURL)
-	if strings.TrimSpace(input.Provider) != "" || strings.TrimSpace(globalModel.Provider) == "" {
+	providerInput := strings.TrimSpace(input.Provider)
+	iconURLInput := strings.TrimSpace(input.ProviderIconURL)
+	provider := service.ResolveModelProvider(globalModel.ModelName, providerInput, iconURLInput)
+	if providerInput != "" || strings.TrimSpace(globalModel.Provider) == "" {
 		globalModel.Provider = provider.ID
 	}
-	if strings.TrimSpace(input.ProviderIconURL) != "" || strings.TrimSpace(globalModel.ProviderIconURL) == "" {
+	if providerInput != "" {
+		// An explicitly selected provider makes an empty icon URL an intentional clear.
+		globalModel.ProviderIconURL = iconURLInput
+	} else if iconURLInput != "" || strings.TrimSpace(globalModel.ProviderIconURL) == "" {
 		globalModel.ProviderIconURL = provider.IconURL
 	}
 	globalModel.QuotaType = normalizeQuotaType(input.QuotaType)
@@ -3685,11 +3690,16 @@ func globalModelFromInput(input modelConfigInput, existing *model.ModelConfig) (
 		}
 	}
 
-	provider := service.ResolveModelProvider(modelName, input.Provider, input.ProviderIconURL)
-	if strings.TrimSpace(globalModel.Provider) == "" || strings.TrimSpace(input.Provider) != "" {
+	providerInput := strings.TrimSpace(input.Provider)
+	iconURLInput := strings.TrimSpace(input.ProviderIconURL)
+	provider := service.ResolveModelProvider(modelName, providerInput, iconURLInput)
+	if strings.TrimSpace(globalModel.Provider) == "" || providerInput != "" {
 		globalModel.Provider = provider.ID
 	}
-	if strings.TrimSpace(globalModel.ProviderIconURL) == "" || strings.TrimSpace(input.ProviderIconURL) != "" {
+	if providerInput != "" {
+		// An explicitly selected provider makes an empty icon URL an intentional clear.
+		globalModel.ProviderIconURL = iconURLInput
+	} else if strings.TrimSpace(globalModel.ProviderIconURL) == "" || iconURLInput != "" {
 		globalModel.ProviderIconURL = provider.IconURL
 	}
 	if !globalModel.Enabled {
