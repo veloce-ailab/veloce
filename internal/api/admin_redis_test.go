@@ -7,9 +7,9 @@ import (
 	"net/http/httptest"
 	"testing"
 
-	"github.com/veloce-ailab/veloce/internal/model"
 	"github.com/gin-gonic/gin"
 	"github.com/glebarez/sqlite"
+	"github.com/veloce-ailab/veloce/internal/model"
 	"gorm.io/gorm"
 )
 
@@ -158,6 +158,38 @@ func TestSensitiveSystemSettingsAreRedactedAndPreserved(t *testing.T) {
 	}
 	if exportedValues["hcaptcha_secret"] != "replacement-hcaptcha_secret" || !bytes.Contains([]byte(exportedValues["payment_channels"]), []byte("replacement-stripe-secret")) {
 		t.Fatalf("configuration export did not retain sensitive settings: %+v", exportedValues)
+	}
+}
+
+func TestClearableSystemSettingsAcceptEmptyValues(t *testing.T) {
+	previousDB := model.DB
+	t.Cleanup(func() { model.DB = previousDB })
+	database, err := gorm.Open(sqlite.Open("file:clearable-settings-api-test?mode=memory&cache=shared"), &gorm.Config{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := database.AutoMigrate(&model.SystemSetting{}); err != nil {
+		t.Fatal(err)
+	}
+	model.DB = database
+
+	for key, value := range map[string]string{
+		"home_iframe_url": "https://status.example.com/embed",
+		"sensitive_words": "one,two",
+	} {
+		if err := model.SetSystemSetting(key, value); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	updateSettingsForTest(t, map[string]any{
+		"home_iframe_url": "",
+		"sensitive_words": "",
+	})
+	for _, key := range []string{"home_iframe_url", "sensitive_words"} {
+		if got := model.GetSystemSetting(key, "not-empty"); got != "" {
+			t.Fatalf("empty update did not clear %s: got %q", key, got)
+		}
 	}
 }
 

@@ -9,9 +9,9 @@ import (
 	"strings"
 	"time"
 
-	"github.com/veloce-ailab/veloce/internal/config"
 	"github.com/glebarez/sqlite"
 	"github.com/shopspring/decimal"
+	"github.com/veloce-ailab/veloce/internal/config"
 	"gorm.io/driver/mysql"
 	"gorm.io/driver/postgres"
 	"gorm.io/gorm"
@@ -676,7 +676,8 @@ func GetSystemSettingWithDB(db *gorm.DB, key, fallback string) string {
 		return fallback
 	}
 	var setting SystemSetting
-	if err := db.Where("key = ?", key).Limit(1).Find(&setting).Error; err != nil || setting.Value == "" {
+	result := db.Where("key = ?", key).Limit(1).Find(&setting)
+	if result.Error != nil || result.RowsAffected == 0 {
 		return fallback
 	}
 	return setting.Value
@@ -692,6 +693,6 @@ func SetSystemSettingWithDB(db *gorm.DB, key, value string) error {
 	}
 	setting := SystemSetting{Key: key}
 	return db.Where(&SystemSetting{Key: key}).
-		Assign(SystemSetting{Value: value}).
+		Assign(map[string]interface{}{"value": value}).
 		FirstOrCreate(&setting).Error
 }

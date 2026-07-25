@@ -11,10 +11,10 @@ import (
 	"strings"
 	"time"
 
-	"github.com/veloce-ailab/veloce/internal/model"
-	"github.com/veloce-ailab/veloce/internal/service"
 	"github.com/gin-gonic/gin"
 	"github.com/shopspring/decimal"
+	"github.com/veloce-ailab/veloce/internal/model"
+	"github.com/veloce-ailab/veloce/internal/service"
 	"gorm.io/gorm"
 	"gorm.io/gorm/clause"
 )
@@ -45,7 +45,6 @@ var sensitiveSystemSettingKeys = map[string]struct{}{
 	"hcaptcha_secret":                     {},
 	"smtp_password":                       {},
 	"oidc_client_secret":                  {},
-	"sensitive_words":                     {},
 	"payment_yipay_key":                   {},
 	"payment_openpayment_key":             {},
 	"payment_wechat_private_key":          {},
