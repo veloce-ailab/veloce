@@ -12,8 +12,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/veloce-ailab/veloce/internal/model"
 	"github.com/shopspring/decimal"
+	"github.com/veloce-ailab/veloce/internal/model"
 	"gorm.io/gorm"
 )
 
@@ -123,16 +123,25 @@ func APIKeyAllowsModel(apiKey *model.APIKey, modelName string) bool {
 	if apiKey == nil {
 		return true
 	}
+	modelName = normalizeAPIKeyModelName(modelName)
 	allowed := ParseList(apiKey.AllowedModels)
 	if len(allowed) == 0 {
 		return true
 	}
 	for _, item := range allowed {
-		if item == modelName {
+		if normalizeAPIKeyModelName(item) == modelName {
 			return true
 		}
 	}
 	return false
+}
+
+func normalizeAPIKeyModelName(value string) string {
+	value = strings.TrimSpace(value)
+	if len(value) >= len("models/") && strings.EqualFold(value[:len("models/")], "models/") {
+		return strings.TrimSpace(value[len("models/"):])
+	}
+	return value
 }
 
 func APIKeyAllowsIP(apiKey *model.APIKey, clientIP string) bool {

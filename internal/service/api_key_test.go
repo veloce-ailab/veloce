@@ -4,8 +4,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/veloce-ailab/veloce/internal/model"
 	"github.com/shopspring/decimal"
+	"github.com/veloce-ailab/veloce/internal/model"
 )
 
 func TestGenerateAPIKey(t *testing.T) {
@@ -28,6 +28,20 @@ func TestHashAPIKeyIsStable(t *testing.T) {
 	raw := "sk-test-key"
 	if HashAPIKey(raw) != HashAPIKey(raw) {
 		t.Fatal("hash should be stable")
+	}
+}
+
+func TestAPIKeyAllowsModelNormalizesResourcePrefix(t *testing.T) {
+	apiKey := &model.APIKey{AllowedModels: "gpt-5,models/claude-sonnet-4"}
+
+	if !APIKeyAllowsModel(apiKey, "models/gpt-5") {
+		t.Fatal("expected models/ prefix on request to be ignored")
+	}
+	if !APIKeyAllowsModel(apiKey, "claude-sonnet-4") {
+		t.Fatal("expected models/ prefix in allowed list to be ignored")
+	}
+	if APIKeyAllowsModel(apiKey, "GPT-5") {
+		t.Fatal("model matching should remain case-sensitive")
 	}
 }
 

@@ -1767,11 +1767,11 @@ func filterModelsForAPIKey(modelNames []string, apiKey *model.APIKey) []string {
 	}
 	allowedSet := map[string]struct{}{}
 	for _, name := range allowed {
-		allowedSet[name] = struct{}{}
+		allowedSet[normalizeAPIKeyModelName(name)] = struct{}{}
 	}
 	filtered := make([]string, 0, len(modelNames))
 	for _, name := range modelNames {
-		if _, ok := allowedSet[name]; ok {
+		if _, ok := allowedSet[normalizeAPIKeyModelName(name)]; ok {
 			filtered = append(filtered, name)
 		}
 	}
