@@ -4496,7 +4496,7 @@ func (api *UserAPI) UpdateAPIKey(c *gin.Context) {
 	}
 
 	updates := map[string]interface{}{
-		"name":                  firstNonEmptyString(input.Name, apiKey.Name),
+		"name":                  strings.TrimSpace(input.Name),
 		"allowed_models":        service.JoinList(input.AllowedModels),
 		"allowed_user_channels": service.JoinUintList([]uint{userChannelID}),
 		"allowed_ips":           service.JoinList(input.AllowedIPs),
