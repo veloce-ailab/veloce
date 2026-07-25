@@ -20,11 +20,11 @@ import (
 	"sync"
 	"time"
 
+	"github.com/gin-gonic/gin"
+	"github.com/shopspring/decimal"
 	"github.com/veloce-ailab/veloce/internal/adapters"
 	"github.com/veloce-ailab/veloce/internal/cache"
 	"github.com/veloce-ailab/veloce/internal/model"
-	"github.com/gin-gonic/gin"
-	"github.com/shopspring/decimal"
 	"gorm.io/gorm"
 )
 
@@ -2407,6 +2407,30 @@ func normalizeOpenAIRequest(path string, requestBody map[string]interface{}, mod
 		input := normalizeResponsesInput(requestBody["input"])
 		normalized.ResponsesInput = input
 		for _, item := range input {
+			if itemType := strings.TrimSpace(stringFromValue(item["type"])); itemType != "" {
+				switch itemType {
+				case "function_call":
+					callID := responseFirstNonEmptyString(item["call_id"], item["id"])
+					name := strings.TrimSpace(stringFromValue(item["name"]))
+					arguments := stringFromValue(item["arguments"])
+					if callID != "" && name != "" {
+						addNormalizedMessage(&normalized, "assistant", "", []interface{}{map[string]interface{}{
+							"id":   callID,
+							"type": "function",
+							"function": map[string]interface{}{
+								"name":      name,
+								"arguments": arguments,
+							},
+						}}, "")
+					}
+				case "function_call_output":
+					callID := strings.TrimSpace(stringFromValue(item["call_id"]))
+					if callID != "" {
+						addNormalizedMessage(&normalized, "tool", responseFunctionCallOutputText(item["output"]), nil, callID)
+					}
+				}
+				continue
+			}
 			addNormalizedMessage(&normalized, responseInputRole(stringFromValue(item["role"])), contentToText(item["content"]), item["tool_calls"], stringFromValue(item["tool_call_id"]))
 		}
 		return normalized
@@ -3562,6 +3586,20 @@ func responseFirstNonEmptyString(values ...interface{}) string {
 		}
 	}
 	return ""
+}
+
+func responseFunctionCallOutputText(raw interface{}) string {
+	if text := contentToText(raw); strings.TrimSpace(text) != "" {
+		return text
+	}
+	if raw == nil {
+		return ""
+	}
+	encoded, err := json.Marshal(raw)
+	if err != nil {
+		return ""
+	}
+	return string(encoded)
 }
 
 func responseInputRole(role string) string {

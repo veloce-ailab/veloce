@@ -9,8 +9,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/veloce-ailab/veloce/internal/model"
 	"github.com/shopspring/decimal"
+	"github.com/veloce-ailab/veloce/internal/model"
 )
 
 func TestResponsesProxyPreservesFunctionCallHistory(t *testing.T) {
@@ -37,6 +37,48 @@ func TestResponsesProxyPreservesFunctionCallHistory(t *testing.T) {
 	}
 	if !reflect.DeepEqual(input[2], requestBody["input"].([]interface{})[2]) {
 		t.Fatalf("function output was changed: %#v", input[2])
+	}
+}
+
+func TestResponsesToolHistoryConvertsToChatMessages(t *testing.T) {
+	requestBody := map[string]interface{}{
+		"model": "gpt-5",
+		"input": []interface{}{
+			map[string]interface{}{"role": "user", "content": "查询天气"},
+			map[string]interface{}{"type": "function_call", "call_id": "call_weather", "name": "weather", "arguments": `{"city":"Shanghai"}`},
+			map[string]interface{}{"type": "function_call_output", "call_id": "call_weather", "output": `{"temperature":30}`},
+		},
+	}
+
+	normalized := normalizeOpenAIRequest("/v1/responses", requestBody, "upstream-model")
+	payload, err := openAIChatCompletionsPayloadMap(normalized)
+	if err != nil {
+		t.Fatal(err)
+	}
+	messages := payload["messages"].([]map[string]interface{})
+	if len(messages) != 3 {
+		t.Fatalf("message count = %d, want 3", len(messages))
+	}
+	if !reflect.DeepEqual(messages[1], map[string]interface{}{
+		"role":    "assistant",
+		"content": "",
+		"tool_calls": []interface{}{map[string]interface{}{
+			"id":   "call_weather",
+			"type": "function",
+			"function": map[string]interface{}{
+				"name":      "weather",
+				"arguments": `{"city":"Shanghai"}`,
+			},
+		}},
+	}) {
+		t.Fatalf("function call message = %#v", messages[1])
+	}
+	if !reflect.DeepEqual(messages[2], map[string]interface{}{
+		"role":         "tool",
+		"content":      `{"temperature":30}`,
+		"tool_call_id": "call_weather",
+	}) {
+		t.Fatalf("function output message = %#v", messages[2])
 	}
 }
 
