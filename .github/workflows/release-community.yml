@@ -16,7 +16,7 @@ permissions:
   contents: write
 
 env:
-  WEB_REPOSITORY: veloce-ailab/windypear-api-frontend
+  WEB_REPOSITORY: veloce-ailab/veloce-frontend
 
 jobs:
   build:
