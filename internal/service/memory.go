@@ -1,4 +1,4 @@
-package premium
+package service
 
 import (
 	"context"
@@ -18,7 +18,6 @@ import (
 
 	"github.com/veloce-ailab/veloce/internal/config"
 	"github.com/veloce-ailab/veloce/internal/model"
-	communityservice "github.com/veloce-ailab/veloce/internal/service"
 	"github.com/gin-gonic/gin"
 	"gorm.io/gorm"
 )
@@ -105,11 +104,15 @@ type memoryContentResponse struct {
 
 type memoryAPI struct{}
 
-func initMemoryFeatures() error {
+func init() {
+	model.RegisterSQLiteMigrationModels(&AdvancedChatMemoryDocument{})
+}
+
+func InitMemoryFeatures() error {
 	return model.DB.AutoMigrate(&AdvancedChatMemoryDocument{})
 }
 
-func registerMemoryUserRoutes(group *gin.RouterGroup) {
+func RegisterMemoryUserRoutes(group *gin.RouterGroup) {
 	api := &memoryAPI{}
 	group.GET("/advanced-chat/memories", api.list)
 	group.GET("/advanced-chat/memories/:id", api.get)
@@ -118,18 +121,18 @@ func registerMemoryUserRoutes(group *gin.RouterGroup) {
 	group.DELETE("/advanced-chat/memories/:id", api.delete)
 }
 
-func registerMemoryHooks() {
-	communityservice.RegisterAdvancedChatStorageUsageWithDBHook(memoryStorageUsedBytesWithDB)
-	communityservice.RegisterAdvancedChatRuntimeExtensionHook(memoryRuntimeExtension)
-	communityservice.RegisterAdvancedChatToolHandler(memoryToolList, handleMemoryTool)
-	communityservice.RegisterAdvancedChatToolHandler(memoryToolRead, handleMemoryTool)
-	communityservice.RegisterAdvancedChatToolHandler(memoryToolUpsert, handleMemoryTool)
-	communityservice.RegisterAdvancedChatToolHandler(memoryToolPatch, handleMemoryTool)
-	communityservice.RegisterAdvancedChatToolHandler(memoryToolDelete, handleMemoryTool)
+func RegisterMemoryHooks() {
+	RegisterAdvancedChatStorageUsageWithDBHook(memoryStorageUsedBytesWithDB)
+	RegisterAdvancedChatRuntimeExtensionHook(memoryRuntimeExtension)
+	RegisterAdvancedChatToolHandler(memoryToolList, handleMemoryTool)
+	RegisterAdvancedChatToolHandler(memoryToolRead, handleMemoryTool)
+	RegisterAdvancedChatToolHandler(memoryToolUpsert, handleMemoryTool)
+	RegisterAdvancedChatToolHandler(memoryToolPatch, handleMemoryTool)
+	RegisterAdvancedChatToolHandler(memoryToolDelete, handleMemoryTool)
 }
 
 func (api *memoryAPI) list(c *gin.Context) {
-	user, ok := currentPremiumUser(c)
+	user, ok := currentUserFromContext(c)
 	if !ok {
 		c.JSON(http.StatusUnauthorized, gin.H{"error": "Unauthorized"})
 		return
@@ -145,14 +148,14 @@ func (api *memoryAPI) list(c *gin.Context) {
 	}
 	c.JSON(http.StatusOK, gin.H{
 		"memories":        result,
-		"used_bytes":      communityservice.AdvancedChatFileStorageUsedBytes(user.ID),
-		"total_bytes":     communityservice.AdvancedChatFileStorageTotalBytes(),
-		"remaining_bytes": communityservice.AdvancedChatFileStorageRemainingBytes(user.ID),
+		"used_bytes":      AdvancedChatFileStorageUsedBytes(user.ID),
+		"total_bytes":     AdvancedChatFileStorageTotalBytes(),
+		"remaining_bytes": AdvancedChatFileStorageRemainingBytes(user.ID),
 	})
 }
 
 func (api *memoryAPI) get(c *gin.Context) {
-	user, ok := currentPremiumUser(c)
+	user, ok := currentUserFromContext(c)
 	if !ok {
 		c.JSON(http.StatusUnauthorized, gin.H{"error": "Unauthorized"})
 		return
@@ -170,7 +173,7 @@ func (api *memoryAPI) get(c *gin.Context) {
 }
 
 func (api *memoryAPI) upsert(c *gin.Context) {
-	user, ok := currentPremiumUser(c)
+	user, ok := currentUserFromContext(c)
 	if !ok {
 		c.JSON(http.StatusUnauthorized, gin.H{"error": "Unauthorized"})
 		return
@@ -189,7 +192,7 @@ func (api *memoryAPI) upsert(c *gin.Context) {
 }
 
 func (api *memoryAPI) update(c *gin.Context) {
-	user, ok := currentPremiumUser(c)
+	user, ok := currentUserFromContext(c)
 	if !ok {
 		c.JSON(http.StatusUnauthorized, gin.H{"error": "Unauthorized"})
 		return
@@ -210,7 +213,7 @@ func (api *memoryAPI) update(c *gin.Context) {
 }
 
 func (api *memoryAPI) delete(c *gin.Context) {
-	user, ok := currentPremiumUser(c)
+	user, ok := currentUserFromContext(c)
 	if !ok {
 		c.JSON(http.StatusUnauthorized, gin.H{"error": "Unauthorized"})
 		return
@@ -226,15 +229,15 @@ func (api *memoryAPI) delete(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{"message": "Memory deleted"})
 }
 
-func memoryRuntimeExtension(ctx context.Context, input communityservice.AdvancedChatRuntimeContext) (communityservice.AdvancedChatRuntimeExtension, error) {
-	if communityservice.AdvancedChatMemoryToolsDisabled(input.DisabledToolGroups) {
-		return communityservice.AdvancedChatRuntimeExtension{}, nil
+func memoryRuntimeExtension(ctx context.Context, input AdvancedChatRuntimeContext) (AdvancedChatRuntimeExtension, error) {
+	if AdvancedChatMemoryToolsDisabled(input.DisabledToolGroups) {
+		return AdvancedChatRuntimeExtension{}, nil
 	}
 	memories, err := runtimeMemories(input.UserID, input.AgentID)
 	if err != nil {
-		return communityservice.AdvancedChatRuntimeExtension{}, err
+		return AdvancedChatRuntimeExtension{}, err
 	}
-	return communityservice.AdvancedChatRuntimeExtension{
+	return AdvancedChatRuntimeExtension{
 		SystemPrompt: memorySystemPrompt(memories),
 		Tools:        memoryTools(),
 	}, nil
@@ -296,8 +299,8 @@ func attachedMemoryPrompt(memories []AdvancedChatMemoryDocument) string {
 	return builder.String()
 }
 
-func memoryTools() []communityservice.ChatExecutorTool {
-	return []communityservice.ChatExecutorTool{
+func memoryTools() []ChatExecutorTool {
+	return []ChatExecutorTool{
 		{
 			Name:        memoryToolList,
 			Description: "List saved Markdown memories available to this user and current assistant.",
@@ -362,10 +365,10 @@ func memoryTools() []communityservice.ChatExecutorTool {
 	}
 }
 
-func handleMemoryTool(ctx context.Context, input communityservice.AdvancedChatToolCallInput) (string, error) {
+func handleMemoryTool(ctx context.Context, input AdvancedChatToolCallInput) (string, error) {
 	switch input.Name {
 	case memoryToolList:
-		memories, err := listUserMemories(input.UserID, stringArg(input.Arguments, "scope"), firstNonEmpty(stringArg(input.Arguments, "agent_id"), input.AgentID), true)
+		memories, err := listUserMemories(input.UserID, stringArg(input.Arguments, "scope"), firstNonEmptyTrimmed(stringArg(input.Arguments, "agent_id"), input.AgentID), true)
 		if err != nil {
 			return "", err
 		}
@@ -380,7 +383,7 @@ func handleMemoryTool(ctx context.Context, input communityservice.AdvancedChatTo
 	case memoryToolUpsert:
 		memory, _, _, err := upsertMemoryDocument(input.UserID, memoryInput{
 			Scope:   stringArg(input.Arguments, "scope"),
-			AgentID: firstNonEmpty(stringArg(input.Arguments, "agent_id"), input.AgentID),
+			AgentID: firstNonEmptyTrimmed(stringArg(input.Arguments, "agent_id"), input.AgentID),
 			Kind:    stringArg(input.Arguments, "kind"),
 			Title:   stringArg(input.Arguments, "title"),
 			Content: stringArg(input.Arguments, "content"),
@@ -463,7 +466,7 @@ func upsertMemoryDocument(userID uint, input memoryInput, updatedBy string) (Adv
 	var existing AdvancedChatMemoryDocument
 	err := model.DB.Where("user_id = ? AND scope = ? AND agent_id = ? AND kind = ?", userID, scope, agentID, kind).First(&existing).Error
 	if err == nil {
-		input.Title = firstNonEmpty(input.Title, existing.Title)
+		input.Title = firstNonEmptyTrimmed(input.Title, existing.Title)
 		return updateMemoryDocument(userID, existing.ID, input, updatedBy)
 	}
 	if !errors.Is(err, gorm.ErrRecordNotFound) {
@@ -507,16 +510,16 @@ func upsertMemoryDocument(userID uint, input memoryInput, updatedBy string) (Adv
 		Scope:       scope,
 		AgentID:     agentID,
 		Kind:        kind,
-		Title:       truncateRunes(title, 160),
+		Title:       truncateMemoryRunes(title, 160),
 		StoragePath: storagePath,
 		Size:        int64(len(data)),
 		Hash:        hex.EncodeToString(hash[:]),
 		Enabled:     enabled,
 		UpdatedBy:   normalizeUpdatedBy(updatedBy),
 	}
-	storageLimit := communityservice.AdvancedChatFileStorageTotalBytes()
+	storageLimit := AdvancedChatFileStorageTotalBytes()
 	err = model.DB.Transaction(func(tx *gorm.DB) error {
-		used, err := communityservice.AdvancedChatFileStorageUsedBytesWithDB(tx, userID)
+		used, err := AdvancedChatFileStorageUsedBytesWithDB(tx, userID)
 		if err != nil {
 			return err
 		}
@@ -602,14 +605,14 @@ func updateMemoryDocument(userID uint, id string, input memoryInput, updatedBy s
 		updates["storage_path"] = memory.StoragePath
 	}
 	if strings.TrimSpace(input.Title) != "" {
-		updates["title"] = truncateRunes(input.Title, 160)
+		updates["title"] = truncateMemoryRunes(input.Title, 160)
 	}
 	if input.Enabled != nil {
 		updates["enabled"] = *input.Enabled
 	}
-	storageLimit := communityservice.AdvancedChatFileStorageTotalBytes()
+	storageLimit := AdvancedChatFileStorageTotalBytes()
 	err = model.DB.Transaction(func(tx *gorm.DB) error {
-		used, err := communityservice.AdvancedChatFileStorageUsedBytesWithDB(tx, userID)
+		used, err := AdvancedChatFileStorageUsedBytesWithDB(tx, userID)
 		if err != nil {
 			return err
 		}
@@ -898,7 +901,7 @@ func stringArg(arguments map[string]interface{}, key string) string {
 	}
 }
 
-func firstNonEmpty(values ...string) string {
+func firstNonEmptyTrimmed(values ...string) string {
 	for _, value := range values {
 		if strings.TrimSpace(value) != "" {
 			return strings.TrimSpace(value)
@@ -907,7 +910,7 @@ func firstNonEmpty(values ...string) string {
 	return ""
 }
 
-func truncateRunes(value string, max int) string {
+func truncateMemoryRunes(value string, max int) string {
 	value = strings.TrimSpace(value)
 	if max <= 0 {
 		return ""

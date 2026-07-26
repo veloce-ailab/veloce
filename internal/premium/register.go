@@ -41,7 +41,7 @@ func Register() {
 	communitymiddleware.RegisterRateLimiterFactory(newRateLimiterMiddleware)
 	communityservice.RegisterStartupHook(communityservice.InitSubscriptionFeatures)
 	communityservice.RegisterStartupHook(communityservice.InitMetaModelFeatures)
-	communityservice.RegisterStartupHook(initMemoryFeatures)
+	communityservice.RegisterStartupHook(communityservice.InitMemoryFeatures)
 	communityservice.RegisterStartupHook(communityservice.InitAdvancedChatFeatures)
 	communityservice.RegisterAdminRouteHook(communityservice.RegisterSubscriptionAdminRoutes)
 	communityservice.RegisterAdminRouteHook(communityservice.RegisterMetaModelAdminRoutes)
@@ -49,9 +49,9 @@ func Register() {
 	communityservice.RegisterPublicAPIRouteHook(communityservice.RegisterAdvancedChatPublicRoutes)
 	communityservice.RegisterUserRouteHook(communityservice.RegisterSubscriptionUserRoutes)
 	communityservice.RegisterUserRouteHook(communityservice.RegisterAdvancedChatUserRoutes)
-	communityservice.RegisterUserRouteHook(registerMemoryUserRoutes)
+	communityservice.RegisterUserRouteHook(communityservice.RegisterMemoryUserRoutes)
 	communityservice.RegisterGeneratedAssetHook(communityservice.ApplyAdvancedChatGeneratedAssetHook)
-	registerMemoryHooks()
+	communityservice.RegisterMemoryHooks()
 }
 
 // currentPremiumUser resolves the authenticated user for the handlers still
