@@ -23,15 +23,34 @@ import (
 	"github.com/veloce-ailab/veloce/internal/config"
 	"github.com/veloce-ailab/veloce/internal/middleware"
 	"github.com/veloce-ailab/veloce/internal/model"
-	"github.com/veloce-ailab/veloce/internal/premium"
 	"github.com/veloce-ailab/veloce/internal/service"
 	"github.com/gin-gonic/gin"
 )
 
+// registerBuiltinFeatures wires the feature modules into the shared startup and
+// route registries. These used to live behind an "edition" indirection that was
+// always enabled, so they are now registered directly.
+func registerBuiltinFeatures() {
+	api.EnablePaymentFeature()
+	service.RegisterStartupHook(service.InitSubscriptionFeatures)
+	service.RegisterStartupHook(service.InitMetaModelFeatures)
+	service.RegisterStartupHook(service.InitMemoryFeatures)
+	service.RegisterStartupHook(service.InitAdvancedChatFeatures)
+	service.RegisterAdminRouteHook(service.RegisterSubscriptionAdminRoutes)
+	service.RegisterAdminRouteHook(service.RegisterMetaModelAdminRoutes)
+	service.RegisterAdminRouteHook(service.RegisterAdvancedChatAdminRoutes)
+	service.RegisterPublicAPIRouteHook(service.RegisterAdvancedChatPublicRoutes)
+	service.RegisterUserRouteHook(service.RegisterSubscriptionUserRoutes)
+	service.RegisterUserRouteHook(service.RegisterAdvancedChatUserRoutes)
+	service.RegisterUserRouteHook(service.RegisterMemoryUserRoutes)
+	service.RegisterGeneratedAssetHook(service.ApplyAdvancedChatGeneratedAssetHook)
+	service.RegisterMemoryHooks()
+}
+
 func Run() error {
 	// Initialize config
 	config.Init()
-	premium.Register()
+	registerBuiltinFeatures()
 
 	// Initialize database
 	model.InitDB()

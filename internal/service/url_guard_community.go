@@ -1,11 +1,15 @@
 package service
 
 import (
+	"context"
 	"errors"
 	"net"
 	"net/http"
 	"net/url"
 	"strings"
+	"time"
+
+	"github.com/veloce-ailab/veloce/internal/model"
 )
 
 var ErrUnsafeURL = errors.New("target URL is blocked by SSRF protection")
@@ -16,40 +20,25 @@ type URLGuardOptions struct {
 	Resolve              bool
 }
 
-type URLGuardHooks struct {
-	ValidateConfiguredHTTPURL    func(raw string) error
-	ValidateConfiguredTCPAddress func(raw string) error
-	ValidateConfiguredStatus     func(target string, checkType string) error
-	ValidateOutboundHTTPURL      func(raw string, options URLGuardOptions) error
-	CurrentOptions               func() URLGuardOptions
-	Enabled                      func() bool
-}
-
-var urlGuardHooks URLGuardHooks
-
-func RegisterURLGuardHooks(hooks URLGuardHooks) {
-	urlGuardHooks = hooks
-}
-
 func ValidateConfiguredHTTPURL(raw string) error {
-	if urlGuardHooks.ValidateConfiguredHTTPURL != nil {
-		return urlGuardHooks.ValidateConfiguredHTTPURL(raw)
+	if !SSRFProtectionEnabled() {
+		return nil
 	}
-	return validateHTTPURLSyntax(raw)
+	return ValidateOutboundHTTPURL(raw, CurrentURLGuardOptions())
 }
 
 func ValidateConfiguredTCPAddress(raw string) error {
-	if urlGuardHooks.ValidateConfiguredTCPAddress != nil {
-		return urlGuardHooks.ValidateConfiguredTCPAddress(raw)
+	if !SSRFProtectionEnabled() {
+		return nil
 	}
-	_, _, err := net.SplitHostPort(strings.TrimSpace(raw))
-	return err
+	host, _, err := net.SplitHostPort(strings.TrimSpace(raw))
+	if err != nil {
+		return err
+	}
+	return validateOutboundHost(host, CurrentURLGuardOptions())
 }
 
 func ValidateConfiguredStatusTarget(target string, checkType string) error {
-	if urlGuardHooks.ValidateConfiguredStatus != nil {
-		return urlGuardHooks.ValidateConfiguredStatus(target, checkType)
-	}
 	if strings.EqualFold(strings.TrimSpace(checkType), StatusCheckTCP) {
 		address, err := statusTCPGuardAddress(target)
 		if err != nil {
@@ -85,24 +74,103 @@ func statusTCPGuardAddress(target string) (string, error) {
 }
 
 func ValidateOutboundHTTPURL(raw string, options URLGuardOptions) error {
-	if urlGuardHooks.ValidateOutboundHTTPURL != nil {
-		return urlGuardHooks.ValidateOutboundHTTPURL(raw, options)
+	parsed, err := url.Parse(strings.TrimSpace(raw))
+	if err != nil || parsed.Scheme == "" || parsed.Host == "" {
+		return errors.New("invalid URL")
 	}
-	return validateHTTPURLSyntax(raw)
+	if parsed.Scheme != "http" && parsed.Scheme != "https" {
+		return errors.New("URL must use http or https")
+	}
+	return validateOutboundHost(parsed.Hostname(), options)
 }
 
 func CurrentURLGuardOptions() URLGuardOptions {
-	if urlGuardHooks.CurrentOptions != nil {
-		return urlGuardHooks.CurrentOptions()
+	return URLGuardOptions{
+		AllowPrivateNetworks: settingBool("ssrf_allow_private_networks", false),
+		AllowedHosts:         parseDelimitedList(model.GetSystemSetting("ssrf_allowed_hosts", "")),
+		Resolve:              true,
 	}
-	return URLGuardOptions{}
 }
 
 func SSRFProtectionEnabled() bool {
-	if urlGuardHooks.Enabled != nil {
-		return urlGuardHooks.Enabled()
+	return settingBool("ssrf_protection_enabled", true)
+}
+
+// validateOutboundHost rejects hosts that resolve into the deployment's own
+// network. Names are resolved so that a public hostname pointing at a private
+// address cannot be used to reach internal services.
+func validateOutboundHost(host string, options URLGuardOptions) error {
+	host = normalizeGuardHost(host)
+	if host == "" {
+		return errors.New("host is required")
+	}
+	if options.AllowPrivateNetworks || hostAllowed(host, options.AllowedHosts) {
+		return nil
+	}
+	if blockedHostname(host) {
+		return ErrUnsafeURL
+	}
+	if ip := net.ParseIP(host); ip != nil {
+		if unsafeIP(ip) {
+			return ErrUnsafeURL
+		}
+		return nil
+	}
+	if !options.Resolve {
+		return nil
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	ips, err := net.DefaultResolver.LookupIPAddr(ctx, host)
+	if err != nil {
+		return err
+	}
+	if len(ips) == 0 {
+		return errors.New("host did not resolve")
+	}
+	for _, resolved := range ips {
+		if unsafeIP(resolved.IP) {
+			return ErrUnsafeURL
+		}
+	}
+	return nil
+}
+
+func normalizeGuardHost(host string) string {
+	host = strings.TrimSpace(strings.ToLower(host))
+	host = strings.TrimSuffix(host, ".")
+	if unescaped, err := url.QueryUnescape(host); err == nil {
+		host = unescaped
+	}
+	return strings.Trim(host, "[]")
+}
+
+func hostAllowed(host string, allowedHosts []string) bool {
+	host = normalizeGuardHost(host)
+	for _, allowed := range allowedHosts {
+		allowed = normalizeGuardHost(allowed)
+		if allowed == "" {
+			continue
+		}
+		if host == allowed {
+			return true
+		}
+		if strings.HasPrefix(allowed, "*.") && strings.HasSuffix(host, strings.TrimPrefix(allowed, "*")) {
+			return true
+		}
 	}
 	return false
+}
+
+func blockedHostname(host string) bool {
+	return host == "localhost" || strings.HasSuffix(host, ".localhost")
+}
+
+func unsafeIP(ip net.IP) bool {
+	if ip == nil {
+		return true
+	}
+	return ip.IsLoopback() || ip.IsUnspecified() || ip.IsPrivate() || ip.IsLinkLocalUnicast() || ip.IsLinkLocalMulticast() || ip.IsMulticast()
 }
 
 // GuardedRedirectPolicy re-validates every hop of a redirect chain. Validating

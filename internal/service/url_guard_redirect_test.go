@@ -3,22 +3,45 @@ package service
 import (
 	"errors"
 	"net/http"
-	"strings"
 	"testing"
+
+	"github.com/glebarez/sqlite"
+	"github.com/veloce-ailab/veloce/internal/model"
+	"gorm.io/gorm"
 )
+
+// useURLGuardSettings points the guard at an in-memory settings table so tests
+// drive the real validator instead of a stub. Hosts are allow-listed by name to
+// keep assertions independent of DNS.
+func useURLGuardSettings(t *testing.T, values map[string]string) {
+	t.Helper()
+	database, err := gorm.Open(sqlite.Open("file:url-guard-"+t.Name()+"?mode=memory&cache=shared"), &gorm.Config{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := database.AutoMigrate(&model.SystemSetting{}); err != nil {
+		t.Fatal(err)
+	}
+	for key, value := range values {
+		if err := database.Create(&model.SystemSetting{Key: key, Value: value}).Error; err != nil {
+			t.Fatal(err)
+		}
+	}
+	previous := model.DB
+	model.DB = database
+	t.Cleanup(func() { model.DB = previous })
+}
 
 func withBlockedHostGuard(t *testing.T, blockedHost string) {
 	t.Helper()
-	previous := urlGuardHooks
-	t.Cleanup(func() { urlGuardHooks = previous })
-	RegisterURLGuardHooks(URLGuardHooks{
-		ValidateConfiguredHTTPURL: func(raw string) error {
-			if strings.Contains(raw, blockedHost) {
-				return ErrUnsafeURL
-			}
-			return validateHTTPURLSyntax(raw)
-		},
-		Enabled: func() bool { return true },
+	if blockedHost != "127.0.0.1" {
+		t.Fatalf("helper only models the loopback case, got %q", blockedHost)
+	}
+	// Loopback is rejected by the guard itself; the example hosts are allow-listed
+	// so the redirect assertions do not depend on name resolution.
+	useURLGuardSettings(t, map[string]string{
+		"ssrf_protection_enabled": "true",
+		"ssrf_allowed_hosts":      "mcp.example.com,other.example.com",
 	})
 }
 

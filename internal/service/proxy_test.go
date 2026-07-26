@@ -49,16 +49,8 @@ func TestDoUpstreamRequestRejectsUnsafeRedirect(t *testing.T) {
 	}))
 	defer upstream.Close()
 
-	previousHooks := urlGuardHooks
-	defer RegisterURLGuardHooks(previousHooks)
-	RegisterURLGuardHooks(URLGuardHooks{
-		ValidateConfiguredHTTPURL: func(raw string) error {
-			if raw == redirectTarget {
-				return errors.New("unsafe redirect")
-			}
-			return nil
-		},
-	})
+	// The real guard rejects loopback targets whenever SSRF protection is on.
+	useURLGuardSettings(t, map[string]string{"ssrf_protection_enabled": "true"})
 
 	resp, err := NewProxyService().doUpstreamRequest(preparedUpstreamRequest{
 		Method: http.MethodGet,
@@ -84,9 +76,9 @@ func TestDoUpstreamRequestRemovesCredentialsOnCrossHostRedirect(t *testing.T) {
 	}))
 	defer upstream.Close()
 
-	previousHooks := urlGuardHooks
-	defer RegisterURLGuardHooks(previousHooks)
-	RegisterURLGuardHooks(URLGuardHooks{ValidateConfiguredHTTPURL: func(string) error { return nil }})
+	// Both test servers listen on loopback, so private targets must be permitted
+	// for this test to reach the credential-stripping behavior.
+	useURLGuardSettings(t, map[string]string{"ssrf_protection_enabled": "true", "ssrf_allow_private_networks": "true"})
 
 	resp, err := NewProxyService().doUpstreamRequest(preparedUpstreamRequest{
 		Method: http.MethodGet,

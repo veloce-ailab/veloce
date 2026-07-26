@@ -13,21 +13,12 @@ import (
 	"github.com/veloce-ailab/veloce/internal/service"
 )
 
-var rateLimiterFactory func() gin.HandlerFunc
-
 type RateLimiter struct {
 	handler gin.HandlerFunc
 }
 
-func RegisterRateLimiterFactory(factory func() gin.HandlerFunc) {
-	rateLimiterFactory = factory
-}
-
 func NewRateLimiter() *RateLimiter {
-	if rateLimiterFactory != nil {
-		return &RateLimiter{handler: rateLimiterFactory()}
-	}
-	return &RateLimiter{}
+	return &RateLimiter{handler: newSystemRateLimiterMiddleware()}
 }
 
 func (limiter *RateLimiter) Middleware() gin.HandlerFunc {

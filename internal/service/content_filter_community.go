@@ -3,6 +3,8 @@ package service
 import (
 	"strings"
 	"unicode"
+
+	"github.com/veloce-ailab/veloce/internal/model"
 )
 
 const (
@@ -14,45 +16,37 @@ type SensitiveWordMatch struct {
 	Word string
 }
 
-type SensitiveFilterHooks struct {
-	Enabled    func() bool
-	Scope      func() string
-	MatchWords func(text string) (SensitiveWordMatch, bool)
-	Words      func() []string
-}
-
-var sensitiveFilterHooks SensitiveFilterHooks
-
-func RegisterSensitiveFilterHooks(hooks SensitiveFilterHooks) {
-	sensitiveFilterHooks = hooks
-}
-
 func SensitiveFilterEnabled() bool {
-	if sensitiveFilterHooks.Enabled != nil {
-		return sensitiveFilterHooks.Enabled()
-	}
-	return false
+	return settingBool("sensitive_filter_enabled", false)
 }
 
 func SensitiveFilterScope() string {
-	if sensitiveFilterHooks.Scope != nil {
-		return sensitiveFilterHooks.Scope()
+	scope := strings.ToLower(strings.TrimSpace(model.GetSystemSetting("sensitive_filter_scope", SensitiveFilterScopeRequest)))
+	if scope == SensitiveFilterScopeRequestResponse {
+		return scope
 	}
 	return SensitiveFilterScopeRequest
 }
 
 func MatchSensitiveWords(text string) (SensitiveWordMatch, bool) {
-	if sensitiveFilterHooks.MatchWords != nil {
-		return sensitiveFilterHooks.MatchWords(text)
+	words := SensitiveWords()
+	if len(words) == 0 || strings.TrimSpace(text) == "" {
+		return SensitiveWordMatch{}, false
+	}
+	foldedText := strings.ToLower(text)
+	for _, word := range words {
+		if word == "" {
+			continue
+		}
+		if strings.Contains(foldedText, strings.ToLower(word)) {
+			return SensitiveWordMatch{Word: word}, true
+		}
 	}
 	return SensitiveWordMatch{}, false
 }
 
 func SensitiveWords() []string {
-	if sensitiveFilterHooks.Words != nil {
-		return sensitiveFilterHooks.Words()
-	}
-	return nil
+	return parseDelimitedList(model.GetSystemSetting("sensitive_words", ""))
 }
 
 func normalizedRequestText(request normalizedAIRequest) string {
