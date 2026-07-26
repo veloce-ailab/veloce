@@ -401,6 +401,21 @@ type StatusCheck struct {
 	CreatedAt  time.Time     `json:"created_at"`
 }
 
+// ScheduledTaskRun records one execution of a job registered with the unified
+// scheduler. Rows live in the log database; idle scans that found no due work
+// are not recorded.
+type ScheduledTaskRun struct {
+	ID          uint      `gorm:"primaryKey" json:"id"`
+	TaskName    string    `gorm:"size:100;index" json:"task_name"`
+	Status      string    `gorm:"size:16;index" json:"status"`
+	TriggerType string    `gorm:"size:16" json:"trigger"`
+	NodeName    string    `gorm:"size:100" json:"node_name"`
+	Message     string    `gorm:"size:1000" json:"message"`
+	DurationMs  int64     `json:"duration_ms"`
+	StartedAt   time.Time `gorm:"index" json:"started_at"`
+	CreatedAt   time.Time `json:"created_at"`
+}
+
 // Announcement stores dashboard announcements shown to users.
 type Announcement struct {
 	ID        uint      `gorm:"primaryKey" json:"id"`

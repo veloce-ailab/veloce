@@ -32,25 +32,40 @@ func NewReliabilityService() *ReliabilityService {
 }
 
 func (s *ReliabilityService) Start() {
-	go func() {
-		ticker := time.NewTicker(30 * time.Second)
-		defer ticker.Stop()
-		for {
-			s.RunDueChecks(context.Background())
-			<-ticker.C
-		}
-	}()
+	RegisterScheduledJob(ScheduledJob{
+		Name:        "reliability",
+		Description: "上游可用性探测与自动恢复被禁用的渠道",
+		PrimaryOnly: true,
+		Interval:    func() time.Duration { return 30 * time.Second },
+		Run: func(ctx context.Context) (string, bool, error) {
+			probed, recovered, err := s.RunDueChecks(ctx)
+			if err != nil {
+				return "", true, err
+			}
+			if probed == 0 && recovered == 0 {
+				return "", false, nil
+			}
+			parts := make([]string, 0, 2)
+			if probed > 0 {
+				parts = append(parts, fmt.Sprintf("探测 %d 个渠道", probed))
+			}
+			if recovered > 0 {
+				parts = append(parts, fmt.Sprintf("恢复 %d 个渠道", recovered))
+			}
+			return strings.Join(parts, "，"), true, nil
+		},
+	})
 }
 
-func (s *ReliabilityService) RunDueChecks(ctx context.Context) {
+func (s *ReliabilityService) RunDueChecks(ctx context.Context) (int, int, error) {
 	// Only the primary probes upstreams and flips channel availability.
 	if !IsPrimaryNode() {
-		return
+		return 0, 0, nil
 	}
-	recoverAutoDisabledChannels()
+	recovered := recoverAutoDisabledChannels()
 
 	if !ReliabilityAutoDetectUpstreamEnabled() {
-		return
+		return 0, recovered, nil
 	}
 
 	interval := time.Duration(reliabilityDetectIntervalSeconds()) * time.Second
@@ -62,7 +77,7 @@ func (s *ReliabilityService) RunDueChecks(ctx context.Context) {
 		Order("id ASC").
 		Find(&channels).Error; err != nil {
 		log.Printf("reliability upstream detection scan failed: %v", err)
-		return
+		return 0, recovered, err
 	}
 
 	for index := range channels {
@@ -71,6 +86,7 @@ func (s *ReliabilityService) RunDueChecks(ctx context.Context) {
 		s.checkChannel(checkCtx, channel)
 		cancel()
 	}
+	return len(channels), recovered, nil
 }
 
 func (s *ReliabilityService) checkChannel(ctx context.Context, channel *model.Channel) {
@@ -214,9 +230,9 @@ func shouldCountUpstreamFailure(statusCode int) bool {
 		statusCode >= http.StatusInternalServerError
 }
 
-func recoverAutoDisabledChannels() {
+func recoverAutoDisabledChannels() int {
 	if !reliabilityAutoRecoverEnabled() {
-		return
+		return 0
 	}
 	cutoff := time.Now().Add(-time.Duration(reliabilityRecoveryAfterSeconds()) * time.Second)
 	updates := map[string]interface{}{
@@ -227,11 +243,14 @@ func recoverAutoDisabledChannels() {
 		"last_health_status":     "pending",
 		"last_health_checked_at": nil,
 	}
-	if err := model.DB.Model(&model.Channel{}).
+	result := model.DB.Model(&model.Channel{}).
 		Where("enabled = ? AND auto_disabled_at IS NOT NULL AND auto_disabled_at <= ?", false, cutoff).
-		Updates(updates).Error; err != nil {
-		log.Printf("failed to recover auto-disabled channels: %v", err)
+		Updates(updates)
+	if result.Error != nil {
+		log.Printf("failed to recover auto-disabled channels: %v", result.Error)
+		return 0
 	}
+	return int(result.RowsAffected)
 }
 
 func updateChannelHealthStatus(channelID uint, status string) {

@@ -3,6 +3,7 @@ package service
 import (
 	"context"
 	"errors"
+	"fmt"
 	"net/http"
 	"strconv"
 	"strings"
@@ -83,18 +84,25 @@ var advancedChatScheduledTaskSchedulerOnce sync.Once
 
 func startAdvancedChatScheduledTaskScheduler() {
 	advancedChatScheduledTaskSchedulerOnce.Do(func() {
-		go func() {
-			ticker := time.NewTicker(30 * time.Second)
-			defer ticker.Stop()
-			for {
-				// Only the primary dispatches scheduled tasks; otherwise every node
-				// would fire the same task at its due time.
-				if IsPrimaryNode() {
-					runDueAdvancedChatScheduledTasks(context.Background())
+		// Only the primary dispatches scheduled tasks; otherwise every node
+		// would fire the same task at its due time.
+		RegisterScheduledJob(ScheduledJob{
+			Name:        "advanced_chat_scheduled_tasks",
+			Description: "调度用户创建的 AI 计划任务",
+			PrimaryOnly: true,
+			Interval:    func() time.Duration { return 30 * time.Second },
+			Enabled:     func() bool { return advancedChatScheduledTasksEnabled() },
+			Run: func(ctx context.Context) (string, bool, error) {
+				dispatched, err := runDueAdvancedChatScheduledTasks(ctx)
+				if err != nil {
+					return "", true, err
 				}
-				<-ticker.C
-			}
-		}()
+				if dispatched == 0 {
+					return "", false, nil
+				}
+				return fmt.Sprintf("派发 %d 个计划任务", dispatched), true, nil
+			},
+		})
 	})
 }
 
@@ -531,9 +539,9 @@ func runAdvancedChatScheduledTaskCompletion(task AdvancedChatScheduledTask, runI
 	}
 }
 
-func runDueAdvancedChatScheduledTasks(ctx context.Context) {
+func runDueAdvancedChatScheduledTasks(ctx context.Context) (int, error) {
 	if !advancedChatScheduledTasksEnabled() {
-		return
+		return 0, nil
 	}
 	now := time.Now()
 	var tasks []AdvancedChatScheduledTask
@@ -542,11 +550,12 @@ func runDueAdvancedChatScheduledTasks(ctx context.Context) {
 		Order("next_run_at ASC").
 		Limit(20).
 		Find(&tasks).Error; err != nil {
-		return
+		return 0, err
 	}
 	for _, task := range tasks {
 		go startAdvancedChatScheduledTaskRun(ctx, task.UserID, task.ID, true)
 	}
+	return len(tasks), nil
 }
 
 func failAdvancedChatScheduledTaskQueue(taskID string, userID uint, message string) {

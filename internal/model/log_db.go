@@ -119,7 +119,7 @@ func openLogDatabase(path string) (*gorm.DB, error) {
 	if err := configureDatabaseConnection(sqlDB, true); err != nil {
 		return nil, err
 	}
-	if err := database.AutoMigrate(&TokenLog{}, &AuditLog{}, &PluginLog{}, &StatusCheck{}); err != nil {
+	if err := database.AutoMigrate(&TokenLog{}, &AuditLog{}, &PluginLog{}, &StatusCheck{}, &ScheduledTaskRun{}); err != nil {
 		return nil, fmt.Errorf("migrate log database %q: %w", path, err)
 	}
 	logDatabases[path] = database
@@ -146,7 +146,7 @@ func ClearLegacyLogs() error {
 	if DB == nil {
 		return nil
 	}
-	for _, entry := range []interface{}{&AuditLog{}, &TokenLog{}, &PluginLog{}, &StatusCheck{}} {
+	for _, entry := range []interface{}{&AuditLog{}, &TokenLog{}, &PluginLog{}, &StatusCheck{}, &ScheduledTaskRun{}} {
 		if !DB.Migrator().HasTable(entry) {
 			continue
 		}
@@ -166,7 +166,7 @@ func DeleteLogs() (int64, error) {
 	}
 	var deleted int64
 	for _, database := range databases {
-		for _, entry := range []interface{}{&AuditLog{}, &TokenLog{}, &PluginLog{}, &StatusCheck{}} {
+		for _, entry := range []interface{}{&AuditLog{}, &TokenLog{}, &PluginLog{}, &StatusCheck{}, &ScheduledTaskRun{}} {
 			result := database.Session(&gorm.Session{AllowGlobalUpdate: true}).Delete(entry)
 			if result.Error != nil {
 				return deleted, result.Error
@@ -192,6 +192,7 @@ func CleanupLogsBefore(cutoff time.Time) (int64, error) {
 			{&TokenLog{}, "created_at"},
 			{&PluginLog{}, "created_at"},
 			{&StatusCheck{}, "checked_at"},
+			{&ScheduledTaskRun{}, "started_at"},
 		} {
 			result := database.Where(entry.field+" < ?", cutoff).Delete(entry.model)
 			if result.Error != nil {
@@ -346,6 +347,54 @@ func applyTokenLogFilter(query *gorm.DB, filter TokenLogFilter) *gorm.DB {
 		query = query.Where("created_at <= ?", *filter.Until)
 	}
 	return query
+}
+
+type ScheduledTaskRunFilter struct {
+	TaskName string
+	Status   string
+}
+
+// ListScheduledTaskRuns pages through scheduler run history across every log
+// database file, newest first.
+func ListScheduledTaskRuns(filter ScheduledTaskRunFilter, offset, limit int) ([]ScheduledTaskRun, int64, error) {
+	databases, err := LogDatabases()
+	if err != nil {
+		return nil, 0, err
+	}
+	all := make([]ScheduledTaskRun, 0)
+	var total int64
+	perDatabaseLimit := offset + limit
+	if perDatabaseLimit <= 0 {
+		perDatabaseLimit = 100
+	}
+	for _, database := range databases {
+		query := database.Model(&ScheduledTaskRun{})
+		if filter.TaskName != "" {
+			query = query.Where("task_name = ?", filter.TaskName)
+		}
+		if filter.Status != "" {
+			query = query.Where("status = ?", strings.ToLower(filter.Status))
+		}
+		var count int64
+		if err := query.Count(&count).Error; err != nil {
+			return nil, 0, err
+		}
+		total += count
+		var batch []ScheduledTaskRun
+		if err := query.Order("started_at DESC").Limit(perDatabaseLimit).Find(&batch).Error; err != nil {
+			return nil, 0, err
+		}
+		all = append(all, batch...)
+	}
+	sort.Slice(all, func(left, right int) bool { return all[left].StartedAt.After(all[right].StartedAt) })
+	if offset >= len(all) {
+		return []ScheduledTaskRun{}, total, nil
+	}
+	end := len(all)
+	if limit > 0 && offset+limit < end {
+		end = offset + limit
+	}
+	return all[offset:end], total, nil
 }
 
 type AuditLogFilter struct {

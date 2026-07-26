@@ -1,6 +1,7 @@
 package service
 
 import (
+	"context"
 	"errors"
 	"log"
 	"strings"
@@ -89,23 +90,21 @@ func EnsureCurrentNodeRegistered() error {
 // StartNodeHeartbeat keeps this node's last-seen timestamp fresh so the admin
 // UI can tell running nodes from stale records.
 func StartNodeHeartbeat() {
-	go func() {
-		ticker := time.NewTicker(nodeHeartbeatInterval)
-		defer ticker.Stop()
-		for range ticker.C {
-			if !MultiNodeEnabled() {
-				continue
-			}
-			name := CurrentNodeName()
-			if name == "" {
-				continue
-			}
+	RegisterScheduledJob(ScheduledJob{
+		Name:        "node_heartbeat",
+		Description: "刷新当前节点的在线心跳（多节点模式）",
+		PrimaryOnly: false,
+		Interval:    func() time.Duration { return nodeHeartbeatInterval },
+		Enabled:     func() bool { return MultiNodeEnabled() && CurrentNodeName() != "" },
+		Run: func(ctx context.Context) (string, bool, error) {
 			// A node enabled at runtime may not have a row yet.
 			if err := EnsureCurrentNodeRegistered(); err != nil {
-				log.Printf("node heartbeat failed: %v", err)
+				return "", true, err
 			}
-		}
-	}()
+			// Heartbeats are routine; keep them out of the run log.
+			return "", false, nil
+		},
+	})
 }
 
 // IsPrimaryNode reports whether this process owns the scheduled background work

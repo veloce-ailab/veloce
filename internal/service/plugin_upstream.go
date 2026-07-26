@@ -32,14 +32,21 @@ var pluginUpstreamRefreshOnce sync.Once
 
 func startPluginUpstreamRefresh() error {
 	pluginUpstreamRefreshOnce.Do(func() {
-		go func() {
-			refreshPluginUpstreamCredentials()
-			ticker := time.NewTicker(10 * time.Minute)
-			defer ticker.Stop()
-			for range ticker.C {
-				refreshPluginUpstreamCredentials()
-			}
-		}()
+		// Refreshing shared channel credentials once per cluster is enough;
+		// running it on every node would race the same OAuth refresh.
+		RegisterScheduledJob(ScheduledJob{
+			Name:        "plugin_credential_refresh",
+			Description: "刷新插件上游渠道的 OAuth 凭证",
+			PrimaryOnly: true,
+			Interval:    func() time.Duration { return 10 * time.Minute },
+			Run: func(ctx context.Context) (string, bool, error) {
+				refreshed := refreshPluginUpstreamCredentials()
+				if refreshed == 0 {
+					return "", false, nil
+				}
+				return fmt.Sprintf("刷新 %d 个渠道凭证", refreshed), true, nil
+			},
+		})
 	})
 	return nil
 }
@@ -47,14 +54,15 @@ func startPluginUpstreamRefresh() error {
 // refreshPluginUpstreamCredentials renews at most 200 plugin-owned channel
 // credentials. The plugin decides whether its expiration window requires a
 // refresh, so this remains generic for other OAuth-backed providers.
-func refreshPluginUpstreamCredentials() {
+func refreshPluginUpstreamCredentials() int {
 	if model.DB == nil {
-		return
+		return 0
 	}
 	var channels []model.Channel
 	if err := model.DB.Where("enabled = ? AND type LIKE ?", true, pluginUpstreamPrefix+"%").Limit(200).Find(&channels).Error; err != nil {
-		return
+		return 0
 	}
+	refreshed := 0
 	for _, channel := range channels {
 		descriptor, ok := PluginUpstreamForType(channel.Type)
 		if !ok || strings.TrimSpace(descriptor.Upstream.RefreshAction) == "" {
@@ -77,11 +85,13 @@ func refreshPluginUpstreamCredentials() {
 			recordPluginLog(0, descriptor.Plugin.ID, "warn", "upstream_refresh_settings_failed", err.Error(), mustJSON(map[string]interface{}{"channel_id": channel.ID}))
 			continue
 		}
+		refreshed++
 		updatedKey, _ := result["api_key"].(string)
 		if strings.TrimSpace(updatedKey) != "" && updatedKey != channel.APIKey {
 			_ = model.DB.Model(&model.Channel{}).Where("id = ?", channel.ID).Update("api_key", updatedKey).Error
 		}
 	}
+	return refreshed
 }
 
 // PluginUpstreamForType resolves a persisted channel type to its enabled WASM

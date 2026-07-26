@@ -23,24 +23,25 @@ func init() {
 // to the Studio's configured concurrency limit.
 func startPersonalCompanyChiefScheduler() error {
 	personalCompanyChiefSchedulerOnce.Do(func() {
-		go func() {
-			runPersonalCompanyChiefSchedule(context.Background())
-			ticker := time.NewTicker(personalCompanyChiefScheduleInterval)
-			defer ticker.Stop()
-			for range ticker.C {
-				runPersonalCompanyChiefSchedule(context.Background())
-			}
-		}()
+		// A single control loop per cluster, matching this scheduler's contract.
+		RegisterScheduledJob(ScheduledJob{
+			Name:        "personal_company_scheduler",
+			Description: "推进运行中 Studio 的内部工作流",
+			PrimaryOnly: true,
+			Interval:    func() time.Duration { return personalCompanyChiefScheduleInterval },
+			Run: func(ctx context.Context) (string, bool, error) {
+				// Routine ticks stay out of the run log: this fires every 10s
+				// whenever any Studio is operating.
+				runPersonalCompanyChiefSchedule(ctx)
+				return "", false, nil
+			},
+		})
 	})
 	return nil
 }
 
 func runPersonalCompanyChiefSchedule(ctx context.Context) {
 	if model.DB == nil {
-		return
-	}
-	// A single control loop per cluster, matching this scheduler's contract.
-	if !IsPrimaryNode() {
 		return
 	}
 	var companies []model.PersonalCompany

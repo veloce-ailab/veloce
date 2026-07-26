@@ -93,11 +93,12 @@ func Run() error {
 	logCleanupService := service.NewLogCleanupService()
 	rateLimiter := middleware.NewRateLimiter()
 
-	// Start sync loop
+	// Register recurring jobs with the unified scheduler and start its loop.
 	syncService.StartSyncLoop()
 	statusService.Start()
 	reliabilityService.Start()
 	logCleanupService.Start()
+	service.StartScheduler()
 
 	// Initialize Gin
 	gin.SetMode(gin.ReleaseMode)
@@ -126,6 +127,7 @@ func Run() error {
 	passkeyAPI := &api.PasskeyAPI{AuthService: authService}
 	enterpriseAPI := &api.EnterpriseAPI{}
 	clusterAPI := &api.ClusterAPI{}
+	schedulerAPI := &api.SchedulerAPI{}
 
 	// Public routes
 	r.GET("/health", func(c *gin.Context) {
@@ -800,6 +802,9 @@ func Run() error {
 		admin.GET("/nodes", clusterAPI.Status)
 		admin.POST("/nodes/:id/promote", clusterAPI.PromoteNode)
 		admin.DELETE("/nodes/:id", clusterAPI.DeleteNode)
+		admin.GET("/scheduled-jobs", schedulerAPI.List)
+		admin.GET("/scheduled-jobs/runs", schedulerAPI.Runs)
+		admin.POST("/scheduled-jobs/:name/run", schedulerAPI.Trigger)
 		admin.GET("/updates", systemAPI.GetAutoUpdateStatus)
 		admin.POST("/updates/check", systemAPI.CheckForUpdate)
 		admin.POST("/updates/apply", systemAPI.StartAutoUpdate)

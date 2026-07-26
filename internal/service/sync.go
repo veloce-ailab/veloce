@@ -2,6 +2,7 @@ package service
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -35,21 +36,32 @@ func NewSyncService() *SyncService {
 	return &SyncService{}
 }
 
-// StartSyncLoop starts a background worker that checks channel-specific price
-// sync schedules once per minute.
+// StartSyncLoop registers the per-channel price sync with the unified
+// scheduler; channel cron expressions decide which channels are due each scan.
 func (s *SyncService) StartSyncLoop() {
-	ticker := time.NewTicker(time.Minute)
-	go func() {
-		defer ticker.Stop()
-		for range ticker.C {
-			// Scheduled work belongs to the primary node so a cluster does not run
-			// the same sync once per node.
-			if !IsPrimaryNode() {
-				continue
+	RegisterScheduledJob(ScheduledJob{
+		Name:        "price_sync",
+		Description: "按渠道 Cron 计划同步上游模型价格",
+		PrimaryOnly: true,
+		Interval:    func() time.Duration { return time.Minute },
+		Run: func(ctx context.Context) (string, bool, error) {
+			results := s.SyncScheduledPrices()
+			if len(results) == 0 {
+				return "", false, nil
 			}
-			s.SyncScheduledPrices()
-		}
-	}()
+			failed := 0
+			for _, result := range results {
+				if result.Error != "" {
+					failed++
+				}
+			}
+			message := fmt.Sprintf("同步 %d 个渠道", len(results))
+			if failed > 0 {
+				return message, true, fmt.Errorf("%d/%d 个渠道同步失败", failed, len(results))
+			}
+			return message, true, nil
+		},
+	})
 }
 
 type ChannelSyncResult struct {

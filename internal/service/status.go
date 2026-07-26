@@ -38,32 +38,47 @@ func NewStatusService() *StatusService {
 }
 
 func (s *StatusService) Start() {
-	go func() {
-		s.RunDueChecks(context.Background())
-		ticker := time.NewTicker(10 * time.Second)
-		defer ticker.Stop()
-		for range ticker.C {
-			s.RunDueChecks(context.Background())
-		}
-	}()
+	RegisterScheduledJob(ScheduledJob{
+		Name:        "status_monitor",
+		Description: "对已配置的监控目标执行 HTTP/TCP 探测",
+		PrimaryOnly: true,
+		Interval:    func() time.Duration { return 10 * time.Second },
+		Enabled:     func() bool { return systemSettingBool("status_monitor_enabled", false) },
+		Run: func(ctx context.Context) (string, bool, error) {
+			checked, failed, err := s.RunDueChecks(ctx)
+			if err != nil {
+				return "", true, err
+			}
+			if checked == 0 {
+				return "", false, nil
+			}
+			message := fmt.Sprintf("检查 %d 个监控项", checked)
+			if failed > 0 {
+				message += fmt.Sprintf("，%d 个失败", failed)
+			}
+			return message, true, nil
+		},
+	})
 }
 
-func (s *StatusService) RunDueChecks(ctx context.Context) {
+func (s *StatusService) RunDueChecks(ctx context.Context) (int, int, error) {
 	// Replicas skip probing so monitored targets are not hit once per node.
 	if !IsPrimaryNode() {
-		return
+		return 0, 0, nil
 	}
 	if !systemSettingBool("status_monitor_enabled", false) {
-		return
+		return 0, 0, nil
 	}
 
 	var monitors []model.StatusMonitor
 	if err := model.DB.Where("enabled = ?", true).Find(&monitors).Error; err != nil {
 		log.Printf("status monitor scan failed: %v", err)
-		return
+		return 0, 0, err
 	}
 
 	now := time.Now()
+	checked := 0
+	failed := 0
 	for index := range monitors {
 		monitor := &monitors[index]
 		interval := time.Duration(statusIntervalSeconds(monitor.IntervalSeconds)) * time.Second
@@ -71,11 +86,14 @@ func (s *StatusService) RunDueChecks(ctx context.Context) {
 			continue
 		}
 		checkCtx, cancel := context.WithTimeout(ctx, 15*time.Second)
+		checked++
 		if _, err := s.CheckMonitor(checkCtx, monitor); err != nil {
+			failed++
 			log.Printf("status monitor check failed: monitor_id=%d name=%q error=%v", monitor.ID, monitor.Name, err)
 		}
 		cancel()
 	}
+	return checked, failed, nil
 }
 
 func (s *StatusService) CheckMonitorByID(ctx context.Context, id uint) (model.StatusCheck, error) {

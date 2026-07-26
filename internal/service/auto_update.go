@@ -108,14 +108,27 @@ func (s *AutoUpdateService) Start(apply func(stagedBinary string) error) {
 	}
 	s.apply = apply
 	s.started.Do(func() {
-		go func() {
-			s.RunDue(context.Background())
-			ticker := time.NewTicker(time.Minute)
-			defer ticker.Stop()
-			for range ticker.C {
-				s.RunDue(context.Background())
-			}
-		}()
+		RegisterScheduledJob(ScheduledJob{
+			Name:        "auto_update",
+			Description: "检查并安装新版本（每个节点独立更新自身）",
+			PrimaryOnly: false,
+			Interval:    func() time.Duration { return time.Minute },
+			Enabled:     func() bool { return AutoUpdateEnabled() },
+			Run: func(ctx context.Context) (string, bool, error) {
+				if !s.RunDue(ctx) {
+					return "", false, nil
+				}
+				status := CurrentAutoUpdateStatus()
+				if status.LastError != "" {
+					return "", true, errors.New(status.LastError)
+				}
+				message := "已检查更新"
+				if status.LatestVersion != "" {
+					message += "，最新版本 " + status.LatestVersion
+				}
+				return message, true, nil
+			},
+		})
 	})
 }
 
@@ -166,17 +179,16 @@ func (s *AutoUpdateService) CheckNow(ctx context.Context) (AutoUpdateStatus, err
 	return CurrentAutoUpdateStatus(), nil
 }
 
-func (s *AutoUpdateService) RunDue(ctx context.Context) {
+// RunDue reports whether an update check actually ran this pass.
+func (s *AutoUpdateService) RunDue(ctx context.Context) bool {
 	if s == nil || !AutoUpdateEnabled() || !autoUpdateDue() {
-		return
-	}
-	if !AutoUpdateEnabled() || !autoUpdateDue() {
-		return
+		return false
 	}
 	if !beginAutoUpdate("checking", "Checking for updates") {
-		return
+		return false
 	}
 	s.runUpdate(ctx)
+	return true
 }
 
 func (s *AutoUpdateService) runUpdate(ctx context.Context) {

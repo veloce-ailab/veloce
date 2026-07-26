@@ -1,6 +1,8 @@
 package service
 
 import (
+	"context"
+	"fmt"
 	"log"
 	"net/http"
 	"strconv"
@@ -41,28 +43,35 @@ func NewLogCleanupService() *LogCleanupService {
 }
 
 func (s *LogCleanupService) Start() {
-	go func() {
-		s.Run()
-		for {
-			time.Sleep(time.Duration(logCleanupIntervalHours()) * time.Hour)
-			s.Run()
-		}
-	}()
+	RegisterScheduledJob(ScheduledJob{
+		Name:        "log_cleanup",
+		Description: "清理超出保留期限的日志记录",
+		PrimaryOnly: true,
+		Interval:    func() time.Duration { return time.Duration(logCleanupIntervalHours()) * time.Hour },
+		Enabled:     func() bool { return logRetentionDays("log_retention_days") > 0 },
+		Run: func(ctx context.Context) (string, bool, error) {
+			deleted, err := s.Run()
+			if err != nil {
+				return "", true, err
+			}
+			return fmt.Sprintf("清理 %d 行过期日志", deleted), true, nil
+		},
+	})
 }
 
-func (s *LogCleanupService) Run() {
+func (s *LogCleanupService) Run() (int64, error) {
 	// One node is enough to prune shared log storage.
 	if !IsPrimaryNode() {
-		return
+		return 0, nil
 	}
 	retentionDays := logRetentionDays("log_retention_days")
 	if retentionDays <= 0 {
-		return
+		return 0, nil
 	}
 	deleted, err := model.CleanupLogsBefore(time.Now().AddDate(0, 0, -retentionDays))
 	if err != nil {
 		log.Printf("failed to cleanup log databases: %v", err)
-		return
+		return 0, err
 	}
 	if deleted > 0 {
 		RecordAuditLog(AuditLogInput{
@@ -73,6 +82,7 @@ func (s *LogCleanupService) Run() {
 			Metadata: `{"rows":` + strconv.FormatInt(deleted, 10) + `}`,
 		})
 	}
+	return deleted, nil
 }
 
 func RecordAuditLog(input AuditLogInput) {
