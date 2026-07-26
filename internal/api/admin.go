@@ -3743,6 +3743,7 @@ type userChannelCatalogItem struct {
 	ID                  uint                                `json:"id"`
 	Name                string                              `json:"name"`
 	Description         string                              `json:"description"`
+	Multiplier          decimal.Decimal                     `json:"multiplier"`
 	Enabled             bool                                `json:"enabled"`
 	Models              []string                            `json:"models"`
 	ModelIcons          map[string]string                   `json:"model_icons"`
@@ -3905,6 +3906,7 @@ func (api *UserChannelAPI) Catalog(c *gin.Context) {
 			ID:                  channel.ID,
 			Name:                channel.Name,
 			Description:         channel.Description,
+			Multiplier:          channel.Multiplier,
 			Enabled:             channel.Enabled,
 			Models:              models,
 			ModelIcons:          modelIcons,
