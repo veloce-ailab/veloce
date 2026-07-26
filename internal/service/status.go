@@ -49,6 +49,10 @@ func (s *StatusService) Start() {
 }
 
 func (s *StatusService) RunDueChecks(ctx context.Context) {
+	// Replicas skip probing so monitored targets are not hit once per node.
+	if !IsPrimaryNode() {
+		return
+	}
 	if !systemSettingBool("status_monitor_enabled", false) {
 		return
 	}

@@ -51,6 +51,10 @@ func (s *LogCleanupService) Start() {
 }
 
 func (s *LogCleanupService) Run() {
+	// One node is enough to prune shared log storage.
+	if !IsPrimaryNode() {
+		return
+	}
 	retentionDays := logRetentionDays("log_retention_days")
 	if retentionDays <= 0 {
 		return

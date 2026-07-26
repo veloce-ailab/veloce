@@ -42,6 +42,11 @@ func (s *SyncService) StartSyncLoop() {
 	go func() {
 		defer ticker.Stop()
 		for range ticker.C {
+			// Scheduled work belongs to the primary node so a cluster does not run
+			// the same sync once per node.
+			if !IsPrimaryNode() {
+				continue
+			}
 			s.SyncScheduledPrices()
 		}
 	}()

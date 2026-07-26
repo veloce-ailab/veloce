@@ -335,6 +335,10 @@ type systemSettingsResponse struct {
 	RedisPasswordSet                     bool   `json:"redis_password_set"`
 	RedisDatabase                        string `json:"redis_database"`
 	RedisTLSEnabled                      bool   `json:"redis_tls_enabled"`
+	MultiNodeEnabled                     bool   `json:"multi_node_enabled"`
+	NodeAddressMode                      string `json:"node_address_mode"`
+	NodeAddresses                        string `json:"node_addresses"`
+	CurrentNodeName                      string `json:"current_node_name"`
 }
 
 type systemSettingsInput struct {
@@ -516,6 +520,9 @@ type systemSettingsInput struct {
 	RedisPasswordClear                   *bool   `json:"redis_password_clear"`
 	RedisDatabase                        *string `json:"redis_database"`
 	RedisTLSEnabled                      *bool   `json:"redis_tls_enabled"`
+	MultiNodeEnabled                     *bool   `json:"multi_node_enabled"`
+	NodeAddressMode                      *string `json:"node_address_mode"`
+	NodeAddresses                        *string `json:"node_addresses"`
 }
 
 func (api *SystemAPI) PublicSettings(c *gin.Context) {
@@ -1151,6 +1158,8 @@ func (api *SystemAPI) UpdateSettings(c *gin.Context) {
 		"sms_tencent_region":                       input.SMSTencentRegion,
 		"redis_address":                            input.RedisAddress,
 		"redis_username":                           input.RedisUsername,
+		"node_address_mode":                        input.NodeAddressMode,
+		"node_addresses":                           input.NodeAddresses,
 		"redis_database":                           redisDatabase,
 	}
 	for key, value := range stringSettings {
@@ -1179,6 +1188,15 @@ func (api *SystemAPI) UpdateSettings(c *gin.Context) {
 	if input.AuthAgreementMode != nil {
 		if err := model.SetSystemSetting("auth_agreement_mode", authAgreementMode); err != nil {
 			c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to update system settings"})
+			return
+		}
+	}
+
+	// Enabling multi-node mode without NODE_NAME would make this node fail to
+	// start, so it is rejected while the admin can still fix the environment.
+	if input.MultiNodeEnabled != nil {
+		if err := RejectMultiNodeWithoutName(*input.MultiNodeEnabled); err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 			return
 		}
 	}
@@ -1227,6 +1245,7 @@ func (api *SystemAPI) UpdateSettings(c *gin.Context) {
 		"auto_update_enabled":                      input.AutoUpdateEnabled,
 		"redis_enabled":                            input.RedisEnabled,
 		"redis_tls_enabled":                        input.RedisTLSEnabled,
+		"multi_node_enabled":                       input.MultiNodeEnabled,
 	}
 	if input.RedisPasswordClear != nil && *input.RedisPasswordClear {
 		if err := model.SetSystemSetting("redis_password", ""); err != nil {
@@ -1434,6 +1453,10 @@ func currentAdminSystemSettings() systemSettingsResponse {
 	settings.RedisPasswordSet = settingString("redis_password", "") != ""
 	settings.RedisDatabase = settingString("redis_database", "0")
 	settings.RedisTLSEnabled = settingBool("redis_tls_enabled", false)
+	settings.MultiNodeEnabled = settingBool("multi_node_enabled", false)
+	settings.NodeAddressMode = settingString("node_address_mode", "single")
+	settings.NodeAddresses = settingString("node_addresses", "")
+	settings.CurrentNodeName = service.CurrentNodeName()
 	return settings
 }
 

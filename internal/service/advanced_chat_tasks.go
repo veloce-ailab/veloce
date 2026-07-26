@@ -87,7 +87,11 @@ func startAdvancedChatScheduledTaskScheduler() {
 			ticker := time.NewTicker(30 * time.Second)
 			defer ticker.Stop()
 			for {
-				runDueAdvancedChatScheduledTasks(context.Background())
+				// Only the primary dispatches scheduled tasks; otherwise every node
+				// would fire the same task at its due time.
+				if IsPrimaryNode() {
+					runDueAdvancedChatScheduledTasks(context.Background())
+				}
 				<-ticker.C
 			}
 		}()

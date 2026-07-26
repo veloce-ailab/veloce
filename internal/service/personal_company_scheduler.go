@@ -39,6 +39,10 @@ func runPersonalCompanyChiefSchedule(ctx context.Context) {
 	if model.DB == nil {
 		return
 	}
+	// A single control loop per cluster, matching this scheduler's contract.
+	if !IsPrimaryNode() {
+		return
+	}
 	var companies []model.PersonalCompany
 	if err := model.DB.WithContext(ctx).Where("state = ?", model.PersonalCompanyStateOperating).Find(&companies).Error; err != nil {
 		return

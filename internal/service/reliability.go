@@ -43,6 +43,10 @@ func (s *ReliabilityService) Start() {
 }
 
 func (s *ReliabilityService) RunDueChecks(ctx context.Context) {
+	// Only the primary probes upstreams and flips channel availability.
+	if !IsPrimaryNode() {
+		return
+	}
 	recoverAutoDisabledChannels()
 
 	if !ReliabilityAutoDetectUpstreamEnabled() {

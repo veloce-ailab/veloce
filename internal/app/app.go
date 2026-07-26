@@ -65,6 +65,12 @@ func Run() error {
 	if err := service.RunStartupHooks(); err != nil {
 		return err
 	}
+	// Registers this instance and claims the primary role when it is the first
+	// node; later nodes join as replicas and skip scheduled background work.
+	if err := service.EnsureCurrentNodeRegistered(); err != nil {
+		return err
+	}
+	service.StartNodeHeartbeat()
 	if err := service.InitCommunityAdvancedChatFeatures(); err != nil {
 		return err
 	}
@@ -119,6 +125,7 @@ func Run() error {
 	paymentAPI := &api.PaymentAPI{}
 	passkeyAPI := &api.PasskeyAPI{AuthService: authService}
 	enterpriseAPI := &api.EnterpriseAPI{}
+	clusterAPI := &api.ClusterAPI{}
 
 	// Public routes
 	r.GET("/health", func(c *gin.Context) {
@@ -750,6 +757,9 @@ func Run() error {
 		admin.POST("/settings/export", systemAPI.ExportConfiguration)
 		admin.POST("/settings/import", systemAPI.ImportConfiguration)
 		admin.DELETE("/logs", systemAPI.DeleteLogs)
+		admin.GET("/nodes", clusterAPI.Status)
+		admin.POST("/nodes/:id/promote", clusterAPI.PromoteNode)
+		admin.DELETE("/nodes/:id", clusterAPI.DeleteNode)
 		admin.GET("/updates", systemAPI.GetAutoUpdateStatus)
 		admin.POST("/updates/check", systemAPI.CheckForUpdate)
 		admin.POST("/updates/apply", systemAPI.StartAutoUpdate)

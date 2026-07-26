@@ -89,6 +89,7 @@ func InitDB() {
 		&StatusMonitor{},
 		&Announcement{},
 		&SystemSetting{},
+		&ClusterNode{},
 		&VideoTask{},
 		&Plugin{},
 		&UserPluginState{},
@@ -688,6 +689,9 @@ func EnsureDefaultSystemSettings() error {
 		"redis_password":                             "",
 		"redis_database":                             "0",
 		"redis_tls_enabled":                          "false",
+		"multi_node_enabled":                         "false",
+		"node_address_mode":                          "single",
+		"node_addresses":                             "",
 	}
 	for key, value := range defaults {
 		setting := SystemSetting{Key: key}

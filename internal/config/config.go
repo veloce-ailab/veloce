@@ -21,6 +21,7 @@ var (
 	DBMaxIdleConns           int
 	DBConnMaxLifetimeSeconds int
 	DataPath                 string
+	NodeName                 string
 	JWTSecret                string
 	OIDCIssuer               string
 	OIDCClientID             string
@@ -50,6 +51,8 @@ func Init() {
 	}
 	DBConnMaxLifetimeSeconds = getEnvNonNegativeInt("DB_CONN_MAX_LIFETIME_SECONDS", 3600)
 	DataPath = getEnv("DATA_PATH", "data")
+	// Identifies this instance when multi-node mode is on; see service.EnsureCurrentNodeRegistered.
+	NodeName = strings.TrimSpace(getEnv("NODE_NAME", ""))
 	JWTSecret = resolveJWTSecret(Environment)
 	OIDCIssuer = os.Getenv("OIDC_ISSUER")
 	OIDCClientID = os.Getenv("OIDC_CLIENT_ID")
