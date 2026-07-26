@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/gin-gonic/gin"
+	"github.com/veloce-ailab/veloce/internal/service"
 )
 
 var rateLimiterFactory func() gin.HandlerFunc
@@ -167,7 +168,7 @@ func requestRateLimitIdentity(c *gin.Context, fields []string) string {
 		if !ok {
 			continue
 		}
-		value = strings.ToLower(strings.TrimSpace(value))
+		value = normalizeRateLimitIdentity(value)
 		if value == "" {
 			continue
 		}
@@ -178,6 +179,22 @@ func requestRateLimitIdentity(c *gin.Context, fields []string) string {
 		return value
 	}
 	return ""
+}
+
+// normalizeRateLimitIdentity collapses the identity to the same canonical form
+// the handlers resolve it to. Phone numbers matter here: the handlers strip
+// spaces, dashes and a +86/86 prefix, so without the same treatment
+// "13800138000", "+8613800138000" and "138-0013-8000" each get their own
+// counter and the per-identity limit on SMS codes and phone login is bypassed.
+func normalizeRateLimitIdentity(value string) string {
+	value = strings.ToLower(strings.TrimSpace(value))
+	if value == "" {
+		return ""
+	}
+	if phone, err := service.NormalizePhone(value); err == nil {
+		return "phone:" + phone
+	}
+	return value
 }
 
 // Kept local to avoid making integer conversion part of the public API.

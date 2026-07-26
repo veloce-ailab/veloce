@@ -296,6 +296,15 @@ func createAndSendPhoneCode(phone string, purpose string, hCaptchaVerified bool)
 	if err != nil {
 		return err
 	}
+	// Only the newest code stays valid. Leaving earlier codes live means several
+	// 6-digit codes are simultaneously accepted, multiplying the odds of a
+	// successful guess.
+	now := time.Now()
+	if err := model.DB.Model(&model.PhoneVerificationCode{}).
+		Where("phone = ? AND purpose = ? AND used_at IS NULL", phone, purpose).
+		Update("used_at", now).Error; err != nil {
+		return err
+	}
 	record := model.PhoneVerificationCode{
 		Phone:            phone,
 		CodeHash:         hashPhoneCode(phone, purpose, code),
