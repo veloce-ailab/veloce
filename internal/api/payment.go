@@ -765,10 +765,34 @@ func paymentParams(c *gin.Context) map[string]string {
 	return params
 }
 
+// yipayTradeSuccessful reports whether a signature-verified yipay callback
+// describes a completed payment.
+//
+// The presence of a trade number alone must never count as success: gateways
+// also notify on closed, refunded and awaiting-payment trades, and those
+// callbacks carry a trade number too, so treating it as success credits balance
+// for money that was never received. An explicit status therefore decides, and
+// only a gateway that reports no status at all falls back to the trade number
+// (those variants notify solely on success, and the callback is signed with the
+// merchant key so it cannot be forged).
 func yipayTradeSuccessful(params map[string]string) bool {
 	tradeStatus := strings.ToUpper(strings.TrimSpace(params["trade_status"]))
 	status := strings.ToLower(strings.TrimSpace(params["status"]))
-	return tradeStatus == "TRADE_SUCCESS" || tradeStatus == "TRADE_FINISHED" || tradeStatus == "SUCCESS" || status == "1" || status == "success" || status == "paid" || strings.TrimSpace(params["trade_no"]) != ""
+	switch tradeStatus {
+	case "TRADE_SUCCESS", "TRADE_FINISHED", "SUCCESS":
+		return true
+	case "":
+		// No trade_status; the status field or the fallback below decides.
+	default:
+		return false
+	}
+	switch status {
+	case "1", "success", "paid", "true":
+		return true
+	case "":
+		return strings.TrimSpace(params["trade_no"]) != ""
+	}
+	return false
 }
 
 func paramsJSON(params map[string]string) string {
