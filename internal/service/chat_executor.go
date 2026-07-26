@@ -138,7 +138,7 @@ func ExecuteServerChatCompletion(c *gin.Context, user *model.User, req ChatExecu
 	if !allowedByDepartment {
 		return nil, newChatExecutorError(http.StatusForbidden, "Department policy does not allow this model")
 	}
-	if user.Balance.LessThanOrEqual(decimal.Zero) {
+	if (req.ChargeBalance || !PersonalModeEnabled()) && user.Balance.LessThanOrEqual(decimal.Zero) {
 		return nil, newChatExecutorError(http.StatusPaymentRequired, "Insufficient balance")
 	}
 
