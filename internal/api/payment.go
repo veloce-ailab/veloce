@@ -335,6 +335,14 @@ func handlePaymentCallback(c *gin.Context) (bool, error) {
 	}
 	cfg := currentPaymentConfig()
 	if cfg.Provider == paymentProviderOpenPayment {
+		// Verify against the channel that created the order so multi-channel
+		// setups use that channel's merchant credentials; fall back to the
+		// legacy single-channel config when the order cannot be resolved.
+		params := paymentParams(c)
+		orderNo := firstNonEmptyString(strings.TrimSpace(params["merchant_order_no"]), strings.TrimSpace(params["out_trade_no"]))
+		if resolved, err := paymentCallbackChannel(orderNo, paymentProviderOpenPayment); err == nil {
+			cfg = resolved
+		}
 		return handleOpenPaymentCallback(c, cfg)
 	}
 	if isOfficialPaymentProvider(cfg.Provider) {

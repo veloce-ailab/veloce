@@ -235,15 +235,37 @@ func handleOpenPaymentCallback(c *gin.Context, cfg paymentConfig) (bool, error) 
 	if err != nil {
 		return false, err
 	}
-	notifyPayload := paramsJSON(params)
-	gatewayTradeNo := openPaymentParam(params, discovery, "platform_order_no")
-	var order model.PaymentOrder
-	err = model.DB.Transaction(func(tx *gorm.DB) error {
+	if err := markOpenPaymentOrderPaid(orderNo, cfg.ChannelID, openPaymentParam(params, discovery, "platform_order_no"), money, paramsJSON(params)); err != nil {
+		return false, err
+	}
+	return true, nil
+}
+
+// markOpenPaymentOrderPaid settles an Open Payment order.
+//
+// The order must actually belong to Open Payment. Matching on the amount alone
+// let a callback signed with the Open Payment merchant key settle a pending
+// order of any other provider (Stripe, PayPal, WeChat…) whose RMB amount
+// happened to line up — and because the merchant key falls back to the legacy
+// yipay key when not configured separately, that key is not necessarily
+// distinct. The provider field is no longer overwritten either: rewriting it to
+// Open Payment is what hid the mismatch.
+func markOpenPaymentOrderPaid(orderNo, channelID, gatewayTradeNo string, money decimal.Decimal, notifyPayload string) error {
+	return model.DB.Transaction(func(tx *gorm.DB) error {
+		var order model.PaymentOrder
 		if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).Where("order_no = ?", orderNo).First(&order).Error; err != nil {
 			return err
 		}
 		if order.Status == paymentStatusPaid {
 			return nil
+		}
+		if order.GatewayProvider != paymentProviderOpenPayment {
+			return errors.New("payment provider mismatch")
+		}
+		// Legacy single-channel setups carry no channel id on either side, so the
+		// channel is only enforced when both are known.
+		if order.GatewayChannel != "" && channelID != "" && order.GatewayChannel != channelID {
+			return errors.New("payment channel mismatch")
 		}
 		if !money.Round(2).Equal(order.RMBAmount.Round(2)) {
 			return errors.New("payment amount mismatch")
@@ -251,7 +273,6 @@ func handleOpenPaymentCallback(c *gin.Context, cfg paymentConfig) (bool, error) 
 		now := time.Now()
 		updates := map[string]interface{}{
 			"status":           paymentStatusPaid,
-			"gateway_provider": paymentProviderOpenPayment,
 			"gateway_trade_no": gatewayTradeNo,
 			"notify_payload":   notifyPayload,
 			"paid_at":          &now,
@@ -261,10 +282,6 @@ func handleOpenPaymentCallback(c *gin.Context, cfg paymentConfig) (bool, error) 
 		}
 		return tx.Model(&model.User{}).Where("id = ?", order.UserID).UpdateColumn("balance", gorm.Expr("balance + ?", order.Amount)).Error
 	})
-	if err != nil {
-		return false, err
-	}
-	return true, nil
 }
 
 func paymentNotifySuccessBody(c *gin.Context) string {
