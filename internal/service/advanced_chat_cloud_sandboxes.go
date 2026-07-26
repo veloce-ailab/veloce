@@ -68,15 +68,27 @@ const (
 	advancedChatCloudSandboxDeleted   = "deleted"
 )
 
+// Price fields are pointers so partial admin updates leave existing rates
+// untouched instead of silently resetting them to zero.
 type advancedChatCloudSandboxHostInput struct {
-	Name               string          `json:"name"`
-	SecurityPolicy     json.RawMessage `json:"security_policy"`
-	RuntimePriceHour   decimal.Decimal `json:"runtime_price_hour"`
-	CPUPriceHour       decimal.Decimal `json:"cpu_price_hour"`
-	MemoryPriceGBHour  decimal.Decimal `json:"memory_price_gb_hour"`
-	StoragePriceGBHour decimal.Decimal `json:"storage_price_gb_hour"`
-	RuntimeMultiplier  decimal.Decimal `json:"runtime_multiplier"`
-	Enabled            *bool           `json:"enabled"`
+	Name               string           `json:"name"`
+	SecurityPolicy     json.RawMessage  `json:"security_policy"`
+	RuntimePriceHour   *decimal.Decimal `json:"runtime_price_hour"`
+	CPUPriceHour       *decimal.Decimal `json:"cpu_price_hour"`
+	MemoryPriceGBHour  *decimal.Decimal `json:"memory_price_gb_hour"`
+	StoragePriceGBHour *decimal.Decimal `json:"storage_price_gb_hour"`
+	RuntimeMultiplier  *decimal.Decimal `json:"runtime_multiplier"`
+	Enabled            *bool            `json:"enabled"`
+}
+
+func cloudSandboxHostPrice(value *decimal.Decimal) (decimal.Decimal, error) {
+	if value == nil {
+		return decimal.Zero, nil
+	}
+	if value.LessThan(decimal.Zero) {
+		return decimal.Zero, errors.New("Prices must not be negative")
+	}
+	return *value, nil
 }
 
 type advancedChatCloudSandboxInput struct {
@@ -184,8 +196,18 @@ func (api *advancedChatAPI) createCloudSandboxHost(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 		return
 	}
-	if input.RuntimeMultiplier.LessThanOrEqual(decimal.Zero) {
-		input.RuntimeMultiplier = decimal.NewFromInt(1)
+	prices := make([]decimal.Decimal, 0, 4)
+	for _, value := range []*decimal.Decimal{input.RuntimePriceHour, input.CPUPriceHour, input.MemoryPriceGBHour, input.StoragePriceGBHour} {
+		price, err := cloudSandboxHostPrice(value)
+		if err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+			return
+		}
+		prices = append(prices, price)
+	}
+	multiplier := decimal.NewFromInt(1)
+	if input.RuntimeMultiplier != nil && input.RuntimeMultiplier.GreaterThan(decimal.Zero) {
+		multiplier = *input.RuntimeMultiplier
 	}
 	token, err := newAdvancedChatConnectorToken()
 	if err != nil {
@@ -194,7 +216,7 @@ func (api *advancedChatAPI) createCloudSandboxHost(c *gin.Context) {
 	}
 	now := time.Now()
 	device := AdvancedChatConnectorDevice{ID: newAdvancedChatID("acd"), UserID: admin.ID, TokenHash: hashAdvancedChatConnectorToken(token), Name: name, Kind: advancedChatConnectorDeviceKindCLI, Mode: advancedChatConnectorModeSandboxd, Status: advancedChatConnectorDeviceStatusOffline, Workspaces: "[]", CreatedAt: now, UpdatedAt: now}
-	host := AdvancedChatCloudSandboxHost{ID: newAdvancedChatID("ash"), Name: name, ConnectorDeviceID: device.ID, Enabled: input.Enabled == nil || *input.Enabled, SecurityPolicy: policy, RuntimePriceHour: input.RuntimePriceHour, CPUPriceHour: input.CPUPriceHour, MemoryPriceGBHour: input.MemoryPriceGBHour, StoragePriceGBHour: input.StoragePriceGBHour, RuntimeMultiplier: input.RuntimeMultiplier, CreatedAt: now, UpdatedAt: now}
+	host := AdvancedChatCloudSandboxHost{ID: newAdvancedChatID("ash"), Name: name, ConnectorDeviceID: device.ID, Enabled: input.Enabled == nil || *input.Enabled, SecurityPolicy: policy, RuntimePriceHour: prices[0], CPUPriceHour: prices[1], MemoryPriceGBHour: prices[2], StoragePriceGBHour: prices[3], RuntimeMultiplier: multiplier, CreatedAt: now, UpdatedAt: now}
 	if err := model.DB.Transaction(func(tx *gorm.DB) error {
 		if err := tx.Create(&device).Error; err != nil {
 			return err
@@ -236,12 +258,25 @@ func (api *advancedChatAPI) updateCloudSandboxHost(c *gin.Context) {
 		}
 		updates["security_policy"] = policy
 	}
-	updates["runtime_price_hour"] = input.RuntimePriceHour
-	updates["cpu_price_hour"] = input.CPUPriceHour
-	updates["memory_price_gb_hour"] = input.MemoryPriceGBHour
-	updates["storage_price_gb_hour"] = input.StoragePriceGBHour
-	if input.RuntimeMultiplier.GreaterThan(decimal.Zero) {
-		updates["runtime_multiplier"] = input.RuntimeMultiplier
+	priceColumns := map[string]*decimal.Decimal{
+		"runtime_price_hour":    input.RuntimePriceHour,
+		"cpu_price_hour":        input.CPUPriceHour,
+		"memory_price_gb_hour":  input.MemoryPriceGBHour,
+		"storage_price_gb_hour": input.StoragePriceGBHour,
+	}
+	for column, value := range priceColumns {
+		if value == nil {
+			continue
+		}
+		price, err := cloudSandboxHostPrice(value)
+		if err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+			return
+		}
+		updates[column] = price
+	}
+	if input.RuntimeMultiplier != nil && input.RuntimeMultiplier.GreaterThan(decimal.Zero) {
+		updates["runtime_multiplier"] = *input.RuntimeMultiplier
 	}
 	if err := model.DB.Model(&host).Updates(updates).Error; err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to update sandbox host"})
