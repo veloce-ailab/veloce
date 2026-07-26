@@ -1,6 +1,8 @@
 package config
 
 import (
+	"crypto/rand"
+	"encoding/hex"
 	"log"
 	"os"
 	"strconv"
@@ -48,10 +50,7 @@ func Init() {
 	}
 	DBConnMaxLifetimeSeconds = getEnvNonNegativeInt("DB_CONN_MAX_LIFETIME_SECONDS", 3600)
 	DataPath = getEnv("DATA_PATH", "data")
-	JWTSecret = getEnv("JWT_SECRET", "change-me-please")
-	if requiresSecureSecrets(Environment) && JWTSecret == "change-me-please" {
-		log.Fatal("JWT_SECRET must be set to a secure value outside development")
-	}
+	JWTSecret = resolveJWTSecret(Environment)
 	OIDCIssuer = os.Getenv("OIDC_ISSUER")
 	OIDCClientID = os.Getenv("OIDC_CLIENT_ID")
 	OIDCSecret = os.Getenv("OIDC_CLIENT_SECRET")
@@ -87,6 +86,39 @@ func getEnvNonNegativeInt(key string, fallback int) int {
 		return fallback
 	}
 	return value
+}
+
+// placeholderJWTSecret is the value shipped in .env.example. It is published in
+// the repository, so it must never be used to sign real sessions.
+const placeholderJWTSecret = "change-me-please"
+
+// resolveJWTSecret returns the configured signing secret. An unset or
+// placeholder secret is fatal outside development; in development it falls back
+// to a random per-process secret rather than the published placeholder, since
+// anyone could otherwise mint an admin token against such a deployment. The
+// tradeoff is that sessions do not survive a restart until JWT_SECRET is set.
+func resolveJWTSecret(env string) string {
+	secret := strings.TrimSpace(getEnv("JWT_SECRET", ""))
+	if secret != "" && secret != placeholderJWTSecret {
+		return secret
+	}
+	if requiresSecureSecrets(env) {
+		log.Fatal("JWT_SECRET must be set to a secure value outside development")
+	}
+	generated, err := randomSecret()
+	if err != nil {
+		log.Fatalf("failed to generate a development JWT secret: %v", err)
+	}
+	log.Printf("WARNING: JWT_SECRET is not set; signing sessions with a random secret for this process only. Sessions will be invalidated on restart. Set JWT_SECRET to a strong value.")
+	return generated
+}
+
+func randomSecret() (string, error) {
+	raw := make([]byte, 32)
+	if _, err := rand.Read(raw); err != nil {
+		return "", err
+	}
+	return hex.EncodeToString(raw), nil
 }
 
 func requiresSecureSecrets(env string) bool {
