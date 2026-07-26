@@ -592,17 +592,7 @@ func (api *subscriptionAPI) purchaseSubscription(c *gin.Context) {
 	}
 
 	grantErr := model.DB.Transaction(func(tx *gorm.DB) error {
-		if hasExisting && existing.ActiveUntil != nil && plan.DurationDays > 0 {
-			renewed := existing.ActiveUntil.AddDate(0, 0, plan.DurationDays)
-			result := tx.Model(&UserSubscription{}).Where("id = ?", existing.ID).Update("active_until", renewed)
-			if result.Error != nil {
-				return result.Error
-			}
-			if result.RowsAffected > 0 {
-				return nil
-			}
-		}
-		return grantPremiumSubscription(tx, user.ID, plan.ID, plan.DurationDays, true)
+		return grantPurchasedSubscription(tx, user.ID, plan)
 	})
 	if grantErr != nil {
 		// Refund the debit so a failed grant never costs the user.
@@ -632,6 +622,31 @@ func (api *subscriptionAPI) purchaseSubscription(c *gin.Context) {
 		"balance":       settlement.Transaction.BalanceAfter,
 		"subscriptions": subscriptions,
 	})
+}
+
+// grantPurchasedSubscription extends an already active timed subscription for
+// the plan, or creates one when none is active.
+//
+// The expiry is always recomputed from the row read inside this transaction and
+// under a row lock. Extending an expiry that was read before payment lets two
+// concurrent purchases compute the same new expiry from the same stale value:
+// both payments are taken while the window only advances one period.
+func grantPurchasedSubscription(tx *gorm.DB, userID uint, plan SubscriptionPlan) error {
+	if plan.DurationDays > 0 {
+		var current UserSubscription
+		err := activeSubscriptions(tx.Clauses(clause.Locking{Strength: "UPDATE"}), userID, time.Now()).
+			Where("plan_id = ?", plan.ID).
+			Order("id DESC").
+			First(&current).Error
+		switch {
+		case err == nil && current.ActiveUntil != nil:
+			renewed := current.ActiveUntil.AddDate(0, 0, plan.DurationDays)
+			return tx.Model(&UserSubscription{}).Where("id = ?", current.ID).Update("active_until", renewed).Error
+		case err != nil && !errors.Is(err, gorm.ErrRecordNotFound):
+			return err
+		}
+	}
+	return grantPremiumSubscription(tx, userID, plan.ID, plan.DurationDays, true)
 }
 
 // HasSpendableCredit reports whether the user can pay for a request at all.
