@@ -10,6 +10,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log"
 	"net/http"
 	"path"
 	"strconv"
@@ -1259,7 +1260,9 @@ func (api *advancedChatAPI) connectorTaskResult(c *gin.Context) {
 		return
 	}
 	if normalizeAdvancedChatConnectorMode(device.Mode) == advancedChatConnectorModeSandboxd {
-		_ = recordCloudSandboxTaskCharge(c.Param("id"), now)
+		if err := recordCloudSandboxTaskCharge(c.Param("id"), now); err != nil {
+			log.Printf("cloud sandbox billing failed for task %s: %v", c.Param("id"), err)
+		}
 	}
 	c.JSON(http.StatusOK, gin.H{"ok": true})
 }

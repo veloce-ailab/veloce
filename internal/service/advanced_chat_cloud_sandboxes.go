@@ -457,6 +457,17 @@ func cloudSandboxTaskArguments(userID uint, sandboxID string, arguments map[stri
 	if err != nil {
 		return nil, errors.New("cloud sandbox is unavailable")
 	}
+	// Sandbox charges settle after delivery, so without this gate a user at
+	// zero credit could keep dispatching tasks that can never be paid for.
+	if !PersonalModeEnabled() {
+		var user model.User
+		if err := model.DB.Select("id", "balance").First(&user, userID).Error; err != nil {
+			return nil, errors.New("cloud sandbox is unavailable")
+		}
+		if !HasSpendableCredit(&user) {
+			return nil, errors.New("insufficient balance for cloud sandbox usage")
+		}
+	}
 	result := make(map[string]interface{}, len(arguments)+2)
 	for key, value := range arguments {
 		result[key] = value
@@ -534,14 +545,11 @@ func recordCloudSandboxTaskCharge(taskID string, finishedAt time.Time) error {
 			}
 			return err
 		}
-		if cost.GreaterThan(decimal.Zero) {
-			update := tx.Model(&model.User{}).Where("id = ? AND balance >= ?", task.UserID, cost).UpdateColumn("balance", gorm.Expr("balance - ?", cost))
-			if update.Error != nil {
-				return update.Error
-			}
-			if update.RowsAffected == 0 {
-				return ErrInsufficientBalance
-			}
+		// The task result is already delivered, so the charge must not be
+		// refusable: spend subscription quota first and drain the wallet to
+		// zero on a shortfall instead of rolling back the charge record.
+		if err := ApplyDeliveredUsageCharge(tx, task.UserID, cost); err != nil {
+			return err
 		}
 		if err := chargeCloudSandboxStorage(tx, sandbox, host, finishedAt); err != nil {
 			return err
@@ -588,12 +596,8 @@ func chargeCloudSandboxStorage(tx *gorm.DB, sandbox AdvancedChatCloudSandbox, ho
 	if err := tx.Create(&charge).Error; err != nil {
 		return err
 	}
-	update := tx.Model(&model.User{}).Where("id = ? AND balance >= ?", sandbox.UserID, cost).UpdateColumn("balance", gorm.Expr("balance - ?", cost))
-	if update.Error != nil {
-		return update.Error
-	}
-	if update.RowsAffected == 0 {
-		return ErrInsufficientBalance
+	if err := ApplyDeliveredUsageCharge(tx, sandbox.UserID, cost); err != nil {
+		return err
 	}
 	return tx.Model(&sandbox).Updates(map[string]interface{}{"storage_charged_at": &now, "updated_at": now}).Error
 }
