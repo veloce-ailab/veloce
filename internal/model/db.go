@@ -580,6 +580,7 @@ func EnsureDefaultSystemSettings() error {
 		"log_retention_cleanup_interval_hours":       "24",
 		"log_storage_mode":                           "single",
 		"log_retention_days":                         "30",
+		"community_enabled":                          "true",
 		"checkin_enabled":                            "false",
 		"checkin_daily_reward":                       "0",
 		"checkin_timezone":                           "Asia/Shanghai",

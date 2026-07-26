@@ -115,6 +115,8 @@ func Run() error {
 	r.GET("/api/community/knowledge-bases", proxyCommunityAPI)
 	r.GET("/api/community/knowledge-bases/:id", proxyCommunityAPI)
 	r.GET("/api/community/knowledge-bases/:id/content", proxyCommunityAPI)
+	r.GET("/api/community/skills", proxyCommunityAPI)
+	r.GET("/api/community/skills/:id", proxyCommunityAPI)
 	r.GET("/api/avatars/:id", userAPI.GetAvatar)
 	r.GET("/api/pricing", modelAPI.Pricing)
 	r.GET("/api/payment/yipay/return", paymentAPI.Return)

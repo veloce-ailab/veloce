@@ -237,6 +237,7 @@ type systemSettingsResponse struct {
 	LogRetentionCleanupIntervalHours     string `json:"log_retention_cleanup_interval_hours"`
 	LogStorageMode                       string `json:"log_storage_mode"`
 	LogRetentionDays                     string `json:"log_retention_days"`
+	CommunityEnabled                     bool   `json:"community_enabled"`
 	CheckInEnabled                       bool   `json:"checkin_enabled"`
 	CheckInDailyReward                   string `json:"checkin_daily_reward"`
 	CheckInTimezone                      string `json:"checkin_timezone"`
@@ -416,6 +417,7 @@ type systemSettingsInput struct {
 	LogRetentionCleanupIntervalHours     *string `json:"log_retention_cleanup_interval_hours"`
 	LogStorageMode                       *string `json:"log_storage_mode"`
 	LogRetentionDays                     *string `json:"log_retention_days"`
+	CommunityEnabled                     *bool   `json:"community_enabled"`
 	CheckInEnabled                       *bool   `json:"checkin_enabled"`
 	CheckInDailyReward                   *string `json:"checkin_daily_reward"`
 	CheckInTimezone                      *string `json:"checkin_timezone"`
@@ -1203,6 +1205,7 @@ func (api *SystemAPI) UpdateSettings(c *gin.Context) {
 		"reliability_auto_disable_enabled":         input.ReliabilityAutoDisableEnabled,
 		"reliability_auto_detect_upstream_enabled": input.ReliabilityAutoDetectUpstreamEnabled,
 		"reliability_auto_recover_enabled":         input.ReliabilityAutoRecoverEnabled,
+		"community_enabled":                        input.CommunityEnabled,
 		"checkin_enabled":                          input.CheckInEnabled,
 		"checkin_streak_enabled":                   input.CheckInStreakEnabled,
 		"checkin_random_enabled":                   input.CheckInRandomEnabled,
@@ -1340,6 +1343,7 @@ func currentPublicSystemSettings() systemSettingsResponse {
 		LogRetentionCleanupIntervalHours:     settingString("log_retention_cleanup_interval_hours", "24"),
 		LogStorageMode:                       settingString("log_storage_mode", model.LogStorageSingle),
 		LogRetentionDays:                     settingString("log_retention_days", "30"),
+		CommunityEnabled:                     settingBool("community_enabled", true),
 		CheckInEnabled:                       settingBool("checkin_enabled", false),
 		CheckInDailyReward:                   settingString("checkin_daily_reward", "0"),
 		CheckInTimezone:                      settingString("checkin_timezone", "Asia/Shanghai"),

@@ -45,6 +45,10 @@ func (api *advancedChatAPI) importCommunityKnowledgeBase(c *gin.Context) {
 		c.JSON(http.StatusUnauthorized, gin.H{"error": "Unauthorized"})
 		return
 	}
+	if !CommunityFeatureEnabled() {
+		c.JSON(http.StatusForbidden, gin.H{"error": "Community is disabled"})
+		return
+	}
 	if !advancedChatFileStorageEnabled() {
 		c.JSON(http.StatusForbidden, gin.H{"error": "File storage is disabled"})
 		return

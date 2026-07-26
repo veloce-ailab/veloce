@@ -8,6 +8,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/veloce-ailab/veloce/internal/service"
 	"github.com/gin-gonic/gin"
 )
 
@@ -17,6 +18,11 @@ const communityAPIBaseURL = "https://veloce-community.flweb.cn"
 // the embedded community browser. Keeping this request same-origin avoids a
 // browser CORS dependency on the community deployment.
 func proxyCommunityAPI(c *gin.Context) {
+	// 社区功能总开关（后台可关闭，默认开启）
+	if !service.CommunityFeatureEnabled() {
+		c.JSON(http.StatusForbidden, gin.H{"error": "Community is disabled"})
+		return
+	}
 	requestContext, cancel := context.WithTimeout(c.Request.Context(), 12*time.Second)
 	defer cancel()
 	c.Request = c.Request.WithContext(requestContext)
