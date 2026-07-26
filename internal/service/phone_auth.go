@@ -14,6 +14,18 @@ import (
 
 const phoneCodePurposeRegistration = "registration"
 const phoneCodePurposeBind = "bind"
+const phoneCodePurposeLogin = "login"
+
+// SMSLoginEnabled reports whether login via SMS verification code is switched
+// on and usable.
+func SMSLoginEnabled() bool {
+	return PhoneAuthEnabled() && settingBool("sms_login_enabled", false)
+}
+
+// SMSBindingRequired reports whether users are required to bind a phone number.
+func SMSBindingRequired() bool {
+	return PhoneAuthEnabled() && settingBool("sms_binding_required", false)
+}
 
 type PhoneRegisterInput struct {
 	Username     string
@@ -158,6 +170,66 @@ func (s *AuthService) RegisterWithPhone(input PhoneRegisterInput) (*model.User, 
 	}
 	_ = markPhoneCodeUsed(normalized, phoneCodePurposeRegistration, input.PhoneCode)
 
+	token, err := s.issueJWT(&user)
+	if err != nil {
+		return nil, "", err
+	}
+	return &user, token, nil
+}
+
+// SendPhoneLoginCode sends an SMS verification code for logging in with a
+// registered phone number.
+func (s *AuthService) SendPhoneLoginCode(phone string, captchaToken string) error {
+	if required, err := s.InitialSetupRequired(); err != nil {
+		return err
+	} else if required {
+		return ErrInitialSetupRequired
+	}
+	if !SMSLoginEnabled() {
+		return errors.New("SMS login is disabled")
+	}
+	if err := verifyHCaptcha(captchaToken); err != nil {
+		return err
+	}
+	normalized, err := NormalizePhone(phone)
+	if err != nil {
+		return err
+	}
+	var count int64
+	if err := model.DB.Model(&model.User{}).Where("phone = ?", normalized).Count(&count).Error; err != nil {
+		return err
+	}
+	if count == 0 {
+		return errors.New("phone number is not registered")
+	}
+	return createAndSendPhoneCode(normalized, phoneCodePurposeLogin, false)
+}
+
+// LoginWithPhoneCode signs a user in with a phone number and SMS code.
+func (s *AuthService) LoginWithPhoneCode(phone string, code string) (*model.User, string, error) {
+	if required, err := s.InitialSetupRequired(); err != nil {
+		return nil, "", err
+	} else if required {
+		return nil, "", ErrInitialSetupRequired
+	}
+	if !SMSLoginEnabled() {
+		return nil, "", errors.New("SMS login is disabled")
+	}
+	normalized, err := NormalizePhone(phone)
+	if err != nil {
+		return nil, "", err
+	}
+	if _, err := phoneVerificationCode(normalized, phoneCodePurposeLogin, code); err != nil {
+		return nil, "", err
+	}
+	var user model.User
+	if err := model.DB.Where("phone = ?", normalized).First(&user).Error; err != nil {
+		return nil, "", errors.New("phone number is not registered")
+	}
+	if err := EnsureFirstAdmin(&user); err != nil {
+		return nil, "", err
+	}
+	_ = markPhoneCodeUsed(normalized, phoneCodePurposeLogin, code)
 	token, err := s.issueJWT(&user)
 	if err != nil {
 		return nil, "", err

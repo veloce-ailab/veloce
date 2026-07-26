@@ -650,6 +650,8 @@ func EnsureDefaultSystemSettings() error {
 		"smtp_password":                              "",
 		"smtp_from":                                  "",
 		"sms_enabled":                                "false",
+		"sms_login_enabled":                          "false",
+		"sms_binding_required":                       "false",
 		"sms_provider":                               "aliyun",
 		"sms_aliyun_access_key_id":                   "",
 		"sms_aliyun_access_key_secret":               "",

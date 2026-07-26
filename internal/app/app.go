@@ -348,6 +348,70 @@ func Run() error {
 				}
 				c.JSON(http.StatusOK, gin.H{"message": "Verification code sent"})
 			})
+		auth.POST("/phone/login-code",
+			middleware.NewSensitiveRateLimiter(middleware.SensitiveRateLimitConfig{Name: "phone-login-code-ip", Limit: 5, Window: time.Minute}),
+			middleware.NewSensitiveRateLimiter(middleware.SensitiveRateLimitConfig{Name: "phone-login-code-phone", Limit: 2, Window: time.Minute, IdentityFields: []string{"phone"}}),
+			func(c *gin.Context) {
+				var input struct {
+					Phone        string `json:"phone"`
+					CaptchaToken string `json:"captcha_token"`
+				}
+				if err := c.ShouldBindJSON(&input); err != nil {
+					c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+					return
+				}
+				if err := authService.SendPhoneLoginCode(input.Phone, input.CaptchaToken); err != nil {
+					writeAuthError(c, err)
+					return
+				}
+				c.JSON(http.StatusOK, gin.H{"message": "Verification code sent"})
+			})
+		auth.POST("/phone/login",
+			middleware.NewSensitiveRateLimiter(middleware.SensitiveRateLimitConfig{Name: "phone-login-ip", Limit: 15, Window: time.Minute}),
+			middleware.NewSensitiveRateLimiter(middleware.SensitiveRateLimitConfig{Name: "phone-login-phone", Limit: 5, Window: time.Minute, IdentityFields: []string{"phone"}}),
+			func(c *gin.Context) {
+				var input struct {
+					Phone             string `json:"phone"`
+					PhoneCode         string `json:"phone_code"`
+					AgreementAccepted bool   `json:"agreement_accepted"`
+				}
+				if err := c.ShouldBindJSON(&input); err != nil {
+					c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+					return
+				}
+				if err := api.RequireAuthAgreementAccepted(input.AgreementAccepted); err != nil {
+					c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+					return
+				}
+				user, token, err := authService.LoginWithPhoneCode(input.Phone, input.PhoneCode)
+				if err != nil {
+					service.RecordAuditLog(service.AuditLogInput{
+						LogType:    service.AuditLogTypeLogin,
+						Action:     "phone_login_failed",
+						Resource:   "phone_login",
+						Method:     c.Request.Method,
+						Path:       c.Request.URL.Path,
+						StatusCode: http.StatusUnauthorized,
+						IPAddress:  c.ClientIP(),
+						UserAgent:  c.Request.UserAgent(),
+						Message:    err.Error(),
+					})
+					writeAuthError(c, err)
+					return
+				}
+				service.RecordAuditLog(service.AuditLogInput{
+					LogType:    service.AuditLogTypeLogin,
+					Action:     "phone_login_success",
+					Resource:   "phone_login",
+					UserID:     uintPtr(user.ID),
+					Method:     c.Request.Method,
+					Path:       c.Request.URL.Path,
+					StatusCode: http.StatusOK,
+					IPAddress:  c.ClientIP(),
+					UserAgent:  c.Request.UserAgent(),
+				})
+				c.JSON(http.StatusOK, gin.H{"token": token, "user": user})
+			})
 		auth.POST("/phone/register",
 			middleware.NewSensitiveRateLimiter(middleware.SensitiveRateLimitConfig{Name: "phone-register-ip", Limit: 5, Window: time.Minute}),
 			middleware.NewSensitiveRateLimiter(middleware.SensitiveRateLimitConfig{Name: "phone-register-phone", Limit: 3, Window: time.Minute, IdentityFields: []string{"phone"}}),

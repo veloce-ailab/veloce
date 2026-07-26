@@ -308,6 +308,8 @@ type systemSettingsResponse struct {
 	SMTPPassword                         string `json:"smtp_password,omitempty"`
 	SMTPFrom                             string `json:"smtp_from,omitempty"`
 	SMSEnabled                           bool   `json:"sms_enabled"`
+	SMSLoginEnabled                      bool   `json:"sms_login_enabled"`
+	SMSBindingRequired                   bool   `json:"sms_binding_required"`
 	SMSProvider                          string `json:"sms_provider,omitempty"`
 	SMSAliyunAccessKeyID                 string `json:"sms_aliyun_access_key_id,omitempty"`
 	SMSAliyunAccessKeySecret             string `json:"sms_aliyun_access_key_secret,omitempty"`
@@ -485,6 +487,8 @@ type systemSettingsInput struct {
 	SMTPPassword                         *string `json:"smtp_password"`
 	SMTPFrom                             *string `json:"smtp_from"`
 	SMSEnabled                           *bool   `json:"sms_enabled"`
+	SMSLoginEnabled                      *bool   `json:"sms_login_enabled"`
+	SMSBindingRequired                   *bool   `json:"sms_binding_required"`
 	SMSProvider                          *string `json:"sms_provider"`
 	SMSAliyunAccessKeyID                 *string `json:"sms_aliyun_access_key_id"`
 	SMSAliyunAccessKeySecret             *string `json:"sms_aliyun_access_key_secret"`
@@ -1215,6 +1219,8 @@ func (api *SystemAPI) UpdateSettings(c *gin.Context) {
 		"password_hcaptcha_enabled":                input.PasswordHCaptchaEnabled,
 		"email_verification_required":              input.EmailVerificationRequired,
 		"sms_enabled":                              input.SMSEnabled,
+		"sms_login_enabled":                        input.SMSLoginEnabled,
+		"sms_binding_required":                     input.SMSBindingRequired,
 		"auto_update_enabled":                      input.AutoUpdateEnabled,
 		"redis_enabled":                            input.RedisEnabled,
 		"redis_tls_enabled":                        input.RedisTLSEnabled,
@@ -1367,6 +1373,8 @@ func currentPublicSystemSettings() systemSettingsResponse {
 		HCaptchaSiteKey:                      settingString("hcaptcha_site_key", ""),
 		EmailVerificationRequired:            settingBool("email_verification_required", false),
 		SMSEnabled:                           service.PhoneAuthEnabled(),
+		SMSLoginEnabled:                      service.SMSLoginEnabled(),
+		SMSBindingRequired:                   service.SMSBindingRequired(),
 		RegistrationEmailSuffixes:            settingString("registration_email_suffixes", ""),
 		RegistrationEmailRouting:             settingString("registration_email_routing", "[]"),
 		AutoUpdateEnabled:                    settingBool("auto_update_enabled", false),
@@ -1385,6 +1393,8 @@ func currentAdminSystemSettings() systemSettingsResponse {
 	settings.SMTPUsername = settingString("smtp_username", "")
 	settings.SMTPFrom = settingString("smtp_from", "")
 	settings.SMSEnabled = settingBool("sms_enabled", false)
+	settings.SMSLoginEnabled = settingBool("sms_login_enabled", false)
+	settings.SMSBindingRequired = settingBool("sms_binding_required", false)
 	settings.SMSProvider = settingString("sms_provider", "aliyun")
 	settings.SMSAliyunAccessKeyID = settingString("sms_aliyun_access_key_id", "")
 	settings.SMSAliyunSignName = settingString("sms_aliyun_sign_name", "")
