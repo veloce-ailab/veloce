@@ -11,6 +11,7 @@ type User struct {
 	ID            uint                  `gorm:"primaryKey" json:"id"`
 	Username      string                `gorm:"uniqueIndex;size:100" json:"username"`
 	Email         string                `gorm:"uniqueIndex;size:100" json:"email"`
+	Phone         *string               `gorm:"uniqueIndex;size:32" json:"phone,omitempty"`
 	OIDCSub       *string               `gorm:"column:oidc_sub;uniqueIndex;size:255" json:"oidc_sub,omitempty"`
 	PasswordHash  string                `gorm:"size:255" json:"-"`
 	EmailVerified bool                  `gorm:"default:false" json:"email_verified"`
@@ -128,6 +129,19 @@ type WalletLimitUsage struct {
 type EmailVerificationCode struct {
 	ID               uint       `gorm:"primaryKey" json:"id"`
 	Email            string     `gorm:"index;size:100;not null" json:"email"`
+	CodeHash         string     `gorm:"size:64;not null" json:"-"`
+	Purpose          string     `gorm:"size:32;not null" json:"purpose"`
+	HCaptchaVerified bool       `gorm:"default:false" json:"-"`
+	ExpiresAt        time.Time  `gorm:"index" json:"expires_at"`
+	UsedAt           *time.Time `json:"used_at"`
+	CreatedAt        time.Time  `json:"created_at"`
+}
+
+// PhoneVerificationCode stores short-lived SMS codes for phone registration
+// and phone binding.
+type PhoneVerificationCode struct {
+	ID               uint       `gorm:"primaryKey" json:"id"`
+	Phone            string     `gorm:"index;size:32;not null" json:"phone"`
 	CodeHash         string     `gorm:"size:64;not null" json:"-"`
 	Purpose          string     `gorm:"size:32;not null" json:"purpose"`
 	HCaptchaVerified bool       `gorm:"default:false" json:"-"`

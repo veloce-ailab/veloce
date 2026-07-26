@@ -92,9 +92,11 @@ func (s *AuthService) LoginWithPassword(input PasswordLoginInput) (*model.User, 
 	}
 
 	var user model.User
-	err := model.DB.
-		Where("username = ? OR email = ?", identifier, strings.ToLower(identifier)).
-		First(&user).Error
+	query := model.DB.Where("username = ? OR email = ?", identifier, strings.ToLower(identifier))
+	if phone, phoneErr := NormalizePhone(identifier); phoneErr == nil {
+		query = model.DB.Where("username = ? OR email = ? OR phone = ?", identifier, strings.ToLower(identifier), phone)
+	}
+	err := query.First(&user).Error
 	if errors.Is(err, gorm.ErrRecordNotFound) {
 		return nil, "", errors.New("invalid username/email or password")
 	}

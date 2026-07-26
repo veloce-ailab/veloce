@@ -293,7 +293,7 @@ func copySQLiteMigrationTable(source, target *gorm.DB, item interface{}) (int64,
 
 func sqliteMigrationModels() []interface{} {
 	models := []interface{}{
-		&User{}, &UserAvatar{}, &APIKey{}, &EmailVerificationCode{}, &OIDCBindRequest{}, &WebAuthnChallenge{}, &PasskeyCredential{}, &CheckInRecord{}, &PaymentOrder{}, &WalletTransaction{}, &WalletLimitUsage{},
+		&User{}, &UserAvatar{}, &APIKey{}, &EmailVerificationCode{}, &PhoneVerificationCode{}, &OIDCBindRequest{}, &WebAuthnChallenge{}, &PasskeyCredential{}, &CheckInRecord{}, &PaymentOrder{}, &WalletTransaction{}, &WalletLimitUsage{},
 		&Group{}, &UserGroupMembership{}, &ChannelGroupMultiplier{}, &ModelGroupMultiplier{}, &ReferralCommissionLog{}, &UserChannel{}, &Channel{}, &Model{}, &ModelConfig{},
 		&StatusMonitor{}, &Announcement{}, &SystemSetting{}, &VideoTask{}, &Plugin{}, &UserPluginState{}, &UserPluginConfig{}, &PluginKV{},
 		&PersonalCompany{}, &CompanyCharterRevision{}, &PersonalCompanyEmployee{}, &CompanyRoleTemplate{}, &CompanyEmployeeVersion{}, &CompanyCapabilityEvidence{}, &CompanyRecruitmentPlan{}, &CompanyObjective{}, &CompanyWorkItem{}, &CompanyWorkAttempt{}, &CompanyArtifact{}, &CompanyHandoffPackage{}, &CompanyApprovalRequest{}, &CompanyBudgetLedger{}, &CompanyAuditEvent{}, &CompanySignal{}, &CompanyOutboxEvent{},

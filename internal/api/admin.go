@@ -44,6 +44,8 @@ var configurationSections = map[string]struct{}{
 var sensitiveSystemSettingKeys = map[string]struct{}{
 	"hcaptcha_secret":                     {},
 	"smtp_password":                       {},
+	"sms_aliyun_access_key_secret":        {},
+	"sms_tencent_secret_key":              {},
 	"oidc_client_secret":                  {},
 	"payment_yipay_key":                   {},
 	"payment_openpayment_key":             {},
@@ -305,6 +307,18 @@ type systemSettingsResponse struct {
 	SMTPUsername                         string `json:"smtp_username,omitempty"`
 	SMTPPassword                         string `json:"smtp_password,omitempty"`
 	SMTPFrom                             string `json:"smtp_from,omitempty"`
+	SMSEnabled                           bool   `json:"sms_enabled"`
+	SMSProvider                          string `json:"sms_provider,omitempty"`
+	SMSAliyunAccessKeyID                 string `json:"sms_aliyun_access_key_id,omitempty"`
+	SMSAliyunAccessKeySecret             string `json:"sms_aliyun_access_key_secret,omitempty"`
+	SMSAliyunSignName                    string `json:"sms_aliyun_sign_name,omitempty"`
+	SMSAliyunTemplateCode                string `json:"sms_aliyun_template_code,omitempty"`
+	SMSTencentSecretID                   string `json:"sms_tencent_secret_id,omitempty"`
+	SMSTencentSecretKey                  string `json:"sms_tencent_secret_key,omitempty"`
+	SMSTencentSDKAppID                   string `json:"sms_tencent_sdk_app_id,omitempty"`
+	SMSTencentSignName                   string `json:"sms_tencent_sign_name,omitempty"`
+	SMSTencentTemplateID                 string `json:"sms_tencent_template_id,omitempty"`
+	SMSTencentRegion                     string `json:"sms_tencent_region,omitempty"`
 	OIDCIssuer                           string `json:"oidc_issuer,omitempty"`
 	OIDCClientID                         string `json:"oidc_client_id,omitempty"`
 	OIDCClientSecret                     string `json:"oidc_client_secret,omitempty"`
@@ -470,6 +484,18 @@ type systemSettingsInput struct {
 	SMTPUsername                         *string `json:"smtp_username"`
 	SMTPPassword                         *string `json:"smtp_password"`
 	SMTPFrom                             *string `json:"smtp_from"`
+	SMSEnabled                           *bool   `json:"sms_enabled"`
+	SMSProvider                          *string `json:"sms_provider"`
+	SMSAliyunAccessKeyID                 *string `json:"sms_aliyun_access_key_id"`
+	SMSAliyunAccessKeySecret             *string `json:"sms_aliyun_access_key_secret"`
+	SMSAliyunSignName                    *string `json:"sms_aliyun_sign_name"`
+	SMSAliyunTemplateCode                *string `json:"sms_aliyun_template_code"`
+	SMSTencentSecretID                   *string `json:"sms_tencent_secret_id"`
+	SMSTencentSecretKey                  *string `json:"sms_tencent_secret_key"`
+	SMSTencentSDKAppID                   *string `json:"sms_tencent_sdk_app_id"`
+	SMSTencentSignName                   *string `json:"sms_tencent_sign_name"`
+	SMSTencentTemplateID                 *string `json:"sms_tencent_template_id"`
+	SMSTencentRegion                     *string `json:"sms_tencent_region"`
 	OIDCIssuer                           *string `json:"oidc_issuer"`
 	OIDCClientID                         *string `json:"oidc_client_id"`
 	OIDCClientSecret                     *string `json:"oidc_client_secret"`
@@ -1106,6 +1132,17 @@ func (api *SystemAPI) UpdateSettings(c *gin.Context) {
 		"smtp_username":                            input.SMTPUsername,
 		"smtp_password":                            input.SMTPPassword,
 		"smtp_from":                                input.SMTPFrom,
+		"sms_provider":                             input.SMSProvider,
+		"sms_aliyun_access_key_id":                 input.SMSAliyunAccessKeyID,
+		"sms_aliyun_access_key_secret":             input.SMSAliyunAccessKeySecret,
+		"sms_aliyun_sign_name":                     input.SMSAliyunSignName,
+		"sms_aliyun_template_code":                 input.SMSAliyunTemplateCode,
+		"sms_tencent_secret_id":                    input.SMSTencentSecretID,
+		"sms_tencent_secret_key":                   input.SMSTencentSecretKey,
+		"sms_tencent_sdk_app_id":                   input.SMSTencentSDKAppID,
+		"sms_tencent_sign_name":                    input.SMSTencentSignName,
+		"sms_tencent_template_id":                  input.SMSTencentTemplateID,
+		"sms_tencent_region":                       input.SMSTencentRegion,
 		"redis_address":                            input.RedisAddress,
 		"redis_username":                           input.RedisUsername,
 		"redis_database":                           redisDatabase,
@@ -1177,6 +1214,7 @@ func (api *SystemAPI) UpdateSettings(c *gin.Context) {
 		"token_api_enabled":                        input.TokenAPIEnabled,
 		"password_hcaptcha_enabled":                input.PasswordHCaptchaEnabled,
 		"email_verification_required":              input.EmailVerificationRequired,
+		"sms_enabled":                              input.SMSEnabled,
 		"auto_update_enabled":                      input.AutoUpdateEnabled,
 		"redis_enabled":                            input.RedisEnabled,
 		"redis_tls_enabled":                        input.RedisTLSEnabled,
@@ -1328,6 +1366,7 @@ func currentPublicSystemSettings() systemSettingsResponse {
 		PasswordHCaptchaEnabled:              settingBool("password_hcaptcha_enabled", false),
 		HCaptchaSiteKey:                      settingString("hcaptcha_site_key", ""),
 		EmailVerificationRequired:            settingBool("email_verification_required", false),
+		SMSEnabled:                           service.PhoneAuthEnabled(),
 		RegistrationEmailSuffixes:            settingString("registration_email_suffixes", ""),
 		RegistrationEmailRouting:             settingString("registration_email_routing", "[]"),
 		AutoUpdateEnabled:                    settingBool("auto_update_enabled", false),
@@ -1345,6 +1384,16 @@ func currentAdminSystemSettings() systemSettingsResponse {
 	settings.SMTPPort = settingString("smtp_port", "587")
 	settings.SMTPUsername = settingString("smtp_username", "")
 	settings.SMTPFrom = settingString("smtp_from", "")
+	settings.SMSEnabled = settingBool("sms_enabled", false)
+	settings.SMSProvider = settingString("sms_provider", "aliyun")
+	settings.SMSAliyunAccessKeyID = settingString("sms_aliyun_access_key_id", "")
+	settings.SMSAliyunSignName = settingString("sms_aliyun_sign_name", "")
+	settings.SMSAliyunTemplateCode = settingString("sms_aliyun_template_code", "")
+	settings.SMSTencentSecretID = settingString("sms_tencent_secret_id", "")
+	settings.SMSTencentSDKAppID = settingString("sms_tencent_sdk_app_id", "")
+	settings.SMSTencentSignName = settingString("sms_tencent_sign_name", "")
+	settings.SMSTencentTemplateID = settingString("sms_tencent_template_id", "")
+	settings.SMSTencentRegion = settingString("sms_tencent_region", "ap-guangzhou")
 	settings.SSRFAllowedHosts = settingString("ssrf_allowed_hosts", "")
 	settings.PaymentYipayGatewayURL = settingString("payment_yipay_gateway_url", "")
 	settings.PaymentChannels = redactPaymentChannelSecrets(settingString("payment_channels", "[]"))
@@ -3346,6 +3395,50 @@ func (api *ModelAPI) ApplyPriceSync(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{"results": []service.ChannelSyncResult{result}})
 }
 
+// PreviewCommunityPriceSync 从社区站点（veloce-community）拉取价格预览，无需渠道
+func (api *ModelAPI) PreviewCommunityPriceSync(c *gin.Context) {
+	preview, err := api.SyncService.PreviewCommunityModelPrices()
+	if err != nil {
+		log.Printf(
+			"HTTP 500 %s %s community price sync preview failed: error=%v",
+			c.Request.Method,
+			c.Request.URL.String(),
+			err,
+		)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	c.JSON(http.StatusOK, preview)
+}
+
+// ApplyCommunityPriceSync 应用社区价格预览中选中的模型
+func (api *ModelAPI) ApplyCommunityPriceSync(c *gin.Context) {
+	var input modelSyncApplyInput
+	if err := c.ShouldBindJSON(&input); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+	if len(input.Models) == 0 {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "No models selected"})
+		return
+	}
+
+	result, err := api.SyncService.ApplyCommunityModelPrices(input.Models)
+	if err != nil {
+		log.Printf(
+			"HTTP 500 %s %s community price sync apply failed: model_count=%d result=%+v error=%v",
+			c.Request.Method,
+			c.Request.URL.String(),
+			len(input.Models),
+			result,
+			err,
+		)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error(), "result": result})
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"results": []service.ChannelSyncResult{result}})
+}
+
 func (api *ModelAPI) ListChannelModels(c *gin.Context) {
 	channelID, err := strconv.ParseUint(c.Param("id"), 10, 0)
 	if err != nil || channelID == 0 {
@@ -4313,6 +4406,55 @@ func (api *UserAPI) ChangePassword(c *gin.Context) {
 		return
 	}
 	c.JSON(http.StatusOK, gin.H{"message": "Password updated"})
+}
+
+func (api *UserAPI) SendPhoneBindCode(c *gin.Context) {
+	user, ok := currentUser(c)
+	if !ok {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "Unauthorized"})
+		return
+	}
+	if api.AuthService == nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Authentication service is unavailable"})
+		return
+	}
+	var input struct {
+		Phone string `json:"phone"`
+	}
+	if err := c.ShouldBindJSON(&input); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+	if err := api.AuthService.SendPhoneBindCode(user.ID, input.Phone); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"message": "Verification code sent"})
+}
+
+func (api *UserAPI) BindPhone(c *gin.Context) {
+	user, ok := currentUser(c)
+	if !ok {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "Unauthorized"})
+		return
+	}
+	if api.AuthService == nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Authentication service is unavailable"})
+		return
+	}
+	var input struct {
+		Phone     string `json:"phone"`
+		PhoneCode string `json:"phone_code"`
+	}
+	if err := c.ShouldBindJSON(&input); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+	if err := api.AuthService.BindPhone(user.ID, input.Phone, input.PhoneCode); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"message": "Phone number bound"})
 }
 
 func (api *UserAPI) RotateAPIKey(c *gin.Context) {

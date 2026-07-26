@@ -330,6 +330,85 @@ func Run() error {
 				}
 				c.JSON(http.StatusOK, gin.H{"message": "Verification code sent"})
 			})
+		auth.POST("/phone/sms-code",
+			middleware.NewSensitiveRateLimiter(middleware.SensitiveRateLimitConfig{Name: "phone-code-ip", Limit: 5, Window: time.Minute}),
+			middleware.NewSensitiveRateLimiter(middleware.SensitiveRateLimitConfig{Name: "phone-code-phone", Limit: 2, Window: time.Minute, IdentityFields: []string{"phone"}}),
+			func(c *gin.Context) {
+				var input struct {
+					Phone        string `json:"phone"`
+					CaptchaToken string `json:"captcha_token"`
+				}
+				if err := c.ShouldBindJSON(&input); err != nil {
+					c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+					return
+				}
+				if err := authService.SendPhoneRegistrationCode(input.Phone, input.CaptchaToken); err != nil {
+					writeAuthError(c, err)
+					return
+				}
+				c.JSON(http.StatusOK, gin.H{"message": "Verification code sent"})
+			})
+		auth.POST("/phone/register",
+			middleware.NewSensitiveRateLimiter(middleware.SensitiveRateLimitConfig{Name: "phone-register-ip", Limit: 5, Window: time.Minute}),
+			middleware.NewSensitiveRateLimiter(middleware.SensitiveRateLimitConfig{Name: "phone-register-phone", Limit: 3, Window: time.Minute, IdentityFields: []string{"phone"}}),
+			func(c *gin.Context) {
+				var input struct {
+					Username          string `json:"username"`
+					Phone             string `json:"phone"`
+					Password          string `json:"password"`
+					PhoneCode         string `json:"phone_code"`
+					CaptchaToken      string `json:"captcha_token"`
+					ReferralCode      string `json:"referral_code"`
+					AgreementAccepted bool   `json:"agreement_accepted"`
+				}
+				if err := c.ShouldBindJSON(&input); err != nil {
+					c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+					return
+				}
+				if err := api.RequireAuthAgreementAccepted(input.AgreementAccepted); err != nil {
+					c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+					return
+				}
+				if input.ReferralCode == "" {
+					input.ReferralCode = getReferralCookie(c)
+				}
+				user, token, err := authService.RegisterWithPhone(service.PhoneRegisterInput{
+					Username:     input.Username,
+					Phone:        input.Phone,
+					Password:     input.Password,
+					PhoneCode:    input.PhoneCode,
+					CaptchaToken: input.CaptchaToken,
+					ReferralCode: input.ReferralCode,
+				})
+				if err != nil {
+					service.RecordAuditLog(service.AuditLogInput{
+						LogType:    service.AuditLogTypeLogin,
+						Action:     "phone_register_failed",
+						Resource:   "phone_register",
+						Method:     c.Request.Method,
+						Path:       c.Request.URL.Path,
+						StatusCode: http.StatusBadRequest,
+						IPAddress:  c.ClientIP(),
+						UserAgent:  c.Request.UserAgent(),
+						Message:    err.Error(),
+					})
+					writeAuthError(c, err)
+					return
+				}
+				service.RecordAuditLog(service.AuditLogInput{
+					LogType:    service.AuditLogTypeLogin,
+					Action:     "phone_register_success",
+					Resource:   "phone_register",
+					UserID:     uintPtr(user.ID),
+					Method:     c.Request.Method,
+					Path:       c.Request.URL.Path,
+					StatusCode: http.StatusOK,
+					IPAddress:  c.ClientIP(),
+					UserAgent:  c.Request.UserAgent(),
+				})
+				clearReferralCookie(c)
+				c.JSON(http.StatusOK, gin.H{"token": token, "user": user})
+			})
 		auth.POST("/passkey/login/options", middleware.NewSensitiveRateLimiter(middleware.SensitiveRateLimitConfig{Name: "passkey-login-options-ip", Limit: 15, Window: time.Minute}), passkeyAPI.BeginLogin)
 		auth.POST("/passkey/login", middleware.NewSensitiveRateLimiter(middleware.SensitiveRateLimitConfig{Name: "passkey-login-ip", Limit: 15, Window: time.Minute}), passkeyAPI.CompleteLogin)
 		auth.GET("/login", middleware.NewSensitiveRateLimiter(middleware.SensitiveRateLimitConfig{Name: "oidc-login-ip", Limit: 20, Window: time.Minute}), func(c *gin.Context) {
@@ -620,6 +699,8 @@ func Run() error {
 		admin.POST("/models/prices/sync/preview", modelAPI.PreviewPriceSync)
 		admin.POST("/models/prices/sync/preview/browser", modelAPI.PreviewPriceSyncFromBrowser)
 		admin.POST("/models/prices/sync/apply", modelAPI.ApplyPriceSync)
+		admin.POST("/models/prices/sync/preview/community", modelAPI.PreviewCommunityPriceSync)
+		admin.POST("/models/prices/sync/apply/community", modelAPI.ApplyCommunityPriceSync)
 		admin.PUT("/models/:id", modelAPI.Update)
 		admin.DELETE("/models/:id", modelAPI.Delete)
 		admin.PUT("/channel-models/:id", modelAPI.UpdateChannelModel)
@@ -689,6 +770,10 @@ func Run() error {
 		userGroup.GET("/password/method", userAPI.PasswordChangeMethod)
 		userGroup.POST("/password/email-code", userAPI.SendPasswordChangeEmailCode)
 		userGroup.POST("/password/change", userAPI.ChangePassword)
+		userGroup.POST("/phone/bind-code",
+			middleware.NewSensitiveRateLimiter(middleware.SensitiveRateLimitConfig{Name: "phone-bind-code-ip", Limit: 5, Window: time.Minute}),
+			userAPI.SendPhoneBindCode)
+		userGroup.POST("/phone/bind", userAPI.BindPhone)
 		userGroup.POST("/oidc/bind-url", func(c *gin.Context) {
 			val, exists := c.Get("user")
 			if !exists {
