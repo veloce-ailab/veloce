@@ -23,6 +23,7 @@ func InitCommunityAdvancedChatFeatures() error {
 		&AdvancedChatPackagedSkill{},
 		&AdvancedChatSessionFolder{},
 		&AdvancedChatSession{},
+		&AdvancedChatSessionTask{},
 		&AdvancedChatMessage{},
 		&AdvancedChatRun{},
 		&AdvancedChatRunEvent{},
@@ -86,6 +87,7 @@ func RegisterCommunityAdvancedChatUserRoutes(group *gin.RouterGroup) {
 	group.POST("/advanced-chat/sessions", api.saveSession)
 	group.GET("/advanced-chat/sessions/:id", api.getSession)
 	group.PUT("/advanced-chat/sessions/:id", api.saveSession)
+	group.GET("/advanced-chat/sessions/:id/tasks", api.listSessionTasks)
 	group.PUT("/advanced-chat/sessions/:id/folder", api.moveSessionToFolder)
 	group.POST("/advanced-chat/sessions/:id/title/regenerate", api.regenerateSessionTitle)
 	group.DELETE("/advanced-chat/sessions/:id", api.deleteSession)
