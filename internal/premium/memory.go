@@ -227,6 +227,9 @@ func (api *memoryAPI) delete(c *gin.Context) {
 }
 
 func memoryRuntimeExtension(ctx context.Context, input communityservice.AdvancedChatRuntimeContext) (communityservice.AdvancedChatRuntimeExtension, error) {
+	if communityservice.AdvancedChatMemoryToolsDisabled(input.DisabledToolGroups) {
+		return communityservice.AdvancedChatRuntimeExtension{}, nil
+	}
 	memories, err := runtimeMemories(input.UserID, input.AgentID)
 	if err != nil {
 		return communityservice.AdvancedChatRuntimeExtension{}, err

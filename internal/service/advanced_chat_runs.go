@@ -65,6 +65,7 @@ type AdvancedChatSession struct {
 	Temperature              *float64   `json:"temperature"`
 	ReasoningEffort          string     `gorm:"size:20" json:"reasoning_effort"`
 	AutoCompressContext      bool       `gorm:"default:true" json:"auto_compress_context"`
+	DisabledToolGroups       string     `gorm:"type:text;not null;default:'[]'" json:"-"`
 	CreatedAt                time.Time  `json:"created_at"`
 	UpdatedAt                time.Time  `json:"updated_at"`
 }
@@ -174,6 +175,7 @@ type advancedChatSessionResponse struct {
 	Temperature              *float64                      `json:"temperature,omitempty"`
 	ReasoningEffort          string                        `json:"reasoning_effort,omitempty"`
 	AutoCompressContext      bool                          `json:"auto_compress_context"`
+	DisabledToolGroups       []string                      `json:"disabled_tool_groups"`
 	LatestRun                *advancedChatRunResponse      `json:"latest_run,omitempty"`
 	CreatedAt                time.Time                     `json:"created_at"`
 	UpdatedAt                time.Time                     `json:"updated_at"`
@@ -275,6 +277,7 @@ type advancedChatSessionInput struct {
 	Temperature              *float64                          `json:"temperature"`
 	ReasoningEffort          string                            `json:"reasoning_effort"`
 	AutoCompressContext      bool                              `json:"auto_compress_context"`
+	DisabledToolGroups       []string                          `json:"disabled_tool_groups"`
 	Messages                 []advancedChatSessionMessageInput `json:"messages"`
 }
 
@@ -1542,6 +1545,7 @@ func saveAdvancedChatSessionSnapshot(userID uint, sessionID string, input advanc
 	skillIDsJSON, _ := json.Marshal(skillIDs)
 	mcpServerIDsJSON, _ := json.Marshal(mcpServerIDs)
 	knowledgeBaseIDsJSON, _ := json.Marshal(knowledgeBaseIDs)
+	disabledToolGroupsJSON, _ := json.Marshal(normalizeAdvancedChatDisabledToolGroups(input.DisabledToolGroups))
 
 	err := model.DB.Transaction(func(tx *gorm.DB) error {
 		var existingByID AdvancedChatSession
@@ -1584,6 +1588,7 @@ func saveAdvancedChatSessionSnapshot(userID uint, sessionID string, input advanc
 			Temperature:              temperature,
 			ReasoningEffort:          reasoningEffort,
 			AutoCompressContext:      input.AutoCompressContext,
+			DisabledToolGroups:       string(disabledToolGroupsJSON),
 		}
 		var existing AdvancedChatSession
 		if err := tx.Where("id = ? AND user_id = ?", sessionID, userID).Limit(1).Find(&existing).Error; err != nil {
@@ -1610,6 +1615,7 @@ func saveAdvancedChatSessionSnapshot(userID uint, sessionID string, input advanc
 				"temperature":                session.Temperature,
 				"reasoning_effort":           session.ReasoningEffort,
 				"auto_compress_context":      session.AutoCompressContext,
+				"disabled_tool_groups":       session.DisabledToolGroups,
 			}).Error; err != nil {
 				return err
 			}
@@ -1698,6 +1704,7 @@ func createAdvancedChatAssistantRun(userID uint, prepared preparedAdvancedChatAs
 	mcpServerIDs, _ := json.Marshal(uniqueStringsLocal(prepared.input.MCPServerIDs))
 	knowledgeBaseIDs, _ := json.Marshal(uniqueStringsLocal(prepared.input.KnowledgeBaseIDs))
 	commandPrefixes, _ := json.Marshal(normalizeConnectorCommandPrefixes(prepared.input.ConnectorCommandPrefixes))
+	runDisabledToolGroups, _ := json.Marshal(normalizeAdvancedChatDisabledToolGroups(prepared.input.DisabledToolGroups))
 	emptyToolCalls := "[]"
 	now := time.Now()
 
@@ -1744,6 +1751,7 @@ func createAdvancedChatAssistantRun(userID uint, prepared preparedAdvancedChatAs
 			Temperature:              normalizeAdvancedChatTemperature(prepared.input.Temperature),
 			ReasoningEffort:          normalizeAdvancedChatReasoningEffort(prepared.input.ReasoningEffort),
 			AutoCompressContext:      prepared.input.AutoCompressContext,
+			DisabledToolGroups:       string(runDisabledToolGroups),
 		}
 		var existing AdvancedChatSession
 		if err := tx.Where("id = ? AND user_id = ?", sessionID, userID).Limit(1).Find(&existing).Error; err != nil {
@@ -1770,6 +1778,7 @@ func createAdvancedChatAssistantRun(userID uint, prepared preparedAdvancedChatAs
 				"temperature":                session.Temperature,
 				"reasoning_effort":           session.ReasoningEffort,
 				"auto_compress_context":      session.AutoCompressContext,
+				"disabled_tool_groups":       session.DisabledToolGroups,
 			}).Error; err != nil {
 				return err
 			}
@@ -2051,13 +2060,15 @@ func executePreparedAdvancedChatCompletion(ctx context.Context, user *model.User
 		tools = append(tools, advancedChatDeliveryTool(deliveryToolName))
 	}
 	systemPrompt := buildAdvancedChatCompletionSystemPrompt(prepared.agent, prepared.skills, prepared.workspaceSkills, prepared.mode)
+	disabledToolGroups := normalizeAdvancedChatDisabledToolGroups(prepared.input.DisabledToolGroups)
 	extension, err := BuildAdvancedChatRuntimeExtension(ctx, AdvancedChatRuntimeContext{
-		UserID:       user.ID,
-		Mode:         prepared.mode,
-		AgentID:      prepared.input.AgentID,
-		AgentGroupID: prepared.input.AgentGroupID,
-		SessionID:    prepared.input.SessionID,
-		RunID:        prepared.runID,
+		UserID:             user.ID,
+		Mode:               prepared.mode,
+		AgentID:            prepared.input.AgentID,
+		AgentGroupID:       prepared.input.AgentGroupID,
+		SessionID:          prepared.input.SessionID,
+		RunID:              prepared.runID,
+		DisabledToolGroups: disabledToolGroups,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("Failed to load assistant extensions: %w", err)
@@ -2078,6 +2089,7 @@ func executePreparedAdvancedChatCompletion(ctx context.Context, user *model.User
 			}
 		}
 	}
+	tools = filterAdvancedChatToolsByDisabledGroups(tools, disabledToolGroups)
 	if groupPrompt := advancedChatAgentGroupChatSystemPrompt(prepared.agentGroup, prepared.groupAgent); groupPrompt != "" {
 		if strings.TrimSpace(systemPrompt) == "" {
 			systemPrompt = groupPrompt
@@ -2225,7 +2237,8 @@ func executePreparedAdvancedChatCompletion(ctx context.Context, user *model.User
 			resumeExists := toolCall.Name == advancedChatAgentStudioResumeToolName && studioRoleActive
 			activateSkillExists := toolCall.Name == advancedChatActivateSkillToolName && hasSkillCatalog
 			readSkillResourceExists := toolCall.Name == advancedChatReadSkillResourceToolName && hasSkillCatalog
-			extensionExists := extensionToolNames[toolCall.Name] && AdvancedChatToolHandlerExists(toolCall.Name)
+			extensionExists := extensionToolNames[toolCall.Name] && AdvancedChatToolHandlerExists(toolCall.Name) &&
+				!advancedChatToolGroupDisabled(disabledToolGroups, advancedChatToolGroupForTool(toolCall.Name))
 			detail := advancedChatCompletionToolCall{ID: toolCall.ID, Round: round + 1, Name: toolCall.Name, Status: "running"}
 			precreatedConnectorTaskID := ""
 			var precreateConnectorTaskErr error
@@ -2893,6 +2906,7 @@ func createPersistedAdvancedChatCompletionSession(userID uint, input advancedCha
 		Temperature:              normalizeAdvancedChatTemperature(input.Temperature),
 		ReasoningEffort:          normalizeAdvancedChatReasoningEffort(input.ReasoningEffort),
 		AutoCompressContext:      input.AutoCompressContext,
+		DisabledToolGroups:       input.DisabledToolGroups,
 		Messages:                 sessionMessages,
 	}
 	if _, status, message, err := saveAdvancedChatSessionSnapshot(userID, sessionID, snapshot, true); err != nil {
@@ -3359,6 +3373,7 @@ func advancedChatSessionResponseFromModel(session AdvancedChatSession) (advanced
 		Temperature:              session.Temperature,
 		ReasoningEffort:          normalizeAdvancedChatReasoningEffort(session.ReasoningEffort),
 			AutoCompressContext:      session.AutoCompressContext,
+		DisabledToolGroups:       normalizeAdvancedChatDisabledToolGroups(decodeStringList(session.DisabledToolGroups)),
 		LatestRun:                latestRun,
 		CreatedAt:                session.CreatedAt,
 		UpdatedAt:                session.UpdatedAt,

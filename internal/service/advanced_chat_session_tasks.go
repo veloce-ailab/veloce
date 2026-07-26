@@ -53,7 +53,7 @@ func init() {
 }
 
 func sessionTasksRuntimeExtension(_ context.Context, input AdvancedChatRuntimeContext) (AdvancedChatRuntimeExtension, error) {
-	if strings.TrimSpace(input.SessionID) == "" {
+	if strings.TrimSpace(input.SessionID) == "" || advancedChatToolGroupDisabled(input.DisabledToolGroups, advancedChatToolGroupTasks) {
 		return AdvancedChatRuntimeExtension{}, nil
 	}
 	return AdvancedChatRuntimeExtension{

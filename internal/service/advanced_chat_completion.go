@@ -55,6 +55,7 @@ type advancedChatCompletionInput struct {
 	Temperature              *float64                        `json:"temperature"`
 	ReasoningEffort          string                          `json:"reasoning_effort"`
 	AutoCompressContext      bool                            `json:"auto_compress_context"`
+	DisabledToolGroups       []string                        `json:"disabled_tool_groups"`
 	Stream                   bool                            `json:"stream"`
 	ChargeBalance            bool                            `json:"-"`
 }
@@ -280,11 +281,13 @@ func (api *advancedChatAPI) completeChat(c *gin.Context) {
 			systemPrompt = strings.Join([]string{systemPrompt, knowledgeContext}, "\n\n")
 		}
 	}
+	input.DisabledToolGroups = normalizeAdvancedChatDisabledToolGroups(input.DisabledToolGroups)
 	extension, err := BuildAdvancedChatRuntimeExtension(ctx, AdvancedChatRuntimeContext{
-		UserID:    user.ID,
-		Mode:      mode,
-		AgentID:   input.AgentID,
-		SessionID: persistedSessionID,
+		UserID:             user.ID,
+		Mode:               mode,
+		AgentID:            input.AgentID,
+		SessionID:          persistedSessionID,
+		DisabledToolGroups: input.DisabledToolGroups,
 	})
 	if err != nil {
 		message := "Failed to load assistant extensions: " + err.Error()
@@ -303,6 +306,7 @@ func (api *advancedChatAPI) completeChat(c *gin.Context) {
 		}
 	}
 	tools = append(tools, extension.Tools...)
+	tools = filterAdvancedChatToolsByDisabledGroups(tools, input.DisabledToolGroups)
 	presetMessages := []AdvancedChatAgentPresetMessage{}
 	if agent != nil {
 		presetMessages = agent.Presets
@@ -397,7 +401,8 @@ func (api *advancedChatAPI) completeChat(c *gin.Context) {
 		})
 		for _, toolCall := range result.ToolCalls {
 			binding, exists := bindings[toolCall.Name]
-			extensionExists := AdvancedChatToolHandlerExists(toolCall.Name)
+			extensionExists := AdvancedChatToolHandlerExists(toolCall.Name) &&
+				!advancedChatToolGroupDisabled(input.DisabledToolGroups, advancedChatToolGroupForTool(toolCall.Name))
 			detail := advancedChatCompletionToolCall{ID: toolCall.ID, Round: round + 1, Name: toolCall.Name, Status: "running"}
 			if exists {
 				detail.Server = binding.Server.Name
