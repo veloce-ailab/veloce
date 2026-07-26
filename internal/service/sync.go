@@ -22,6 +22,10 @@ type SyncService struct {
 	// Add config for multiple upstreams if needed
 }
 
+// CommunityPricingBaseURL 社区（veloce-community/shequ）站点地址，
+// 作为价格同步的内置来源：社区维护的是参考零售价，按原价应用、不做加价。
+const CommunityPricingBaseURL = "https://veloce-community.flweb.cn"
+
 var (
 	tieredExprThresholdPattern = regexp.MustCompile(`(?i)\b(p|len)\s*(<=|<|>=|>)\s*([0-9]+)`)
 	tieredExprTierPattern      = regexp.MustCompile(`(?is)tier\s*\(\s*"[^"]*"\s*,\s*(.*?)\s*\)`)
@@ -426,20 +430,49 @@ func (s *SyncService) ApplyGlobalModelPrices(channelID uint, items []ModelSyncIt
 		ChannelName: channel.Name,
 		Source:      "prices",
 	}
+	if err := applyGlobalPriceItems(items, &result); err != nil {
+		return result, err
+	}
+	return result, nil
+}
 
+// PreviewCommunityModelPrices 从社区站点拉取模型价格预览。
+// 社区价格为参考零售价，与渠道同步不同：按原价应用，不经过加价倍率。
+func (s *SyncService) PreviewCommunityModelPrices() (ModelSyncPreview, error) {
+	channel := &model.Channel{Name: "community", BaseURL: CommunityPricingBaseURL}
+	items, err := s.fetchNewAPICompatiblePrices(channel)
+	if err != nil {
+		return ModelSyncPreview{}, err
+	}
+	return s.buildGlobalPriceSyncPreview(channel, "community:/api/pricing", items)
+}
+
+// ApplyCommunityModelPrices 将社区价格预览中选中的模型写入全局模型目录
+func (s *SyncService) ApplyCommunityModelPrices(items []ModelSyncItem) (ChannelSyncResult, error) {
+	result := ChannelSyncResult{
+		ChannelName: "community",
+		Source:      "community",
+	}
+	if err := applyGlobalPriceItems(items, &result); err != nil {
+		return result, err
+	}
+	return result, nil
+}
+
+// applyGlobalPriceItems 把一组同步项逐个 upsert 到全局模型目录（渠道与社区来源共用）
+func applyGlobalPriceItems(items []ModelSyncItem, result *ChannelSyncResult) error {
 	for _, item := range items {
 		modelName := strings.TrimSpace(item.ModelName)
 		if modelName == "" {
 			continue
 		}
 		provider := ResolveModelProvider(modelName, item.Provider, item.ProviderIconURL)
-		if err := upsertGlobalModelPrice(modelName, item.QuotaType, item.InputPrice, item.OutputPrice, item.CachedInputPrice, item.CacheWriteInputPrice, item.InputPriceTiers, item.OutputPriceTiers, item.CachedInputPriceTiers, item.CacheWriteInputPriceTiers, provider, &result); err != nil {
+		if err := upsertGlobalModelPrice(modelName, item.QuotaType, item.InputPrice, item.OutputPrice, item.CachedInputPrice, item.CacheWriteInputPrice, item.InputPriceTiers, item.OutputPriceTiers, item.CachedInputPriceTiers, item.CacheWriteInputPriceTiers, provider, result); err != nil {
 			result.Error = err.Error()
-			return result, err
+			return err
 		}
 	}
-
-	return result, nil
+	return nil
 }
 
 func upsertChannelModel(channel *model.Channel, modelName string, provider ModelProvider, result *ChannelSyncResult) error {
