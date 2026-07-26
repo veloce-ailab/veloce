@@ -5,6 +5,7 @@ import (
 	"encoding/base32"
 	"errors"
 	"net/http"
+	"strconv"
 	"strings"
 	"time"
 
@@ -21,6 +22,9 @@ type SubscriptionPlan struct {
 	Name              string          `gorm:"uniqueIndex;size:100;not null" json:"name"`
 	ResetAmount       decimal.Decimal `gorm:"type:decimal(20,6);not null" json:"reset_amount"`
 	ResetIntervalDays int             `gorm:"not null" json:"reset_interval_days"`
+	Price             decimal.Decimal `gorm:"type:decimal(20,6);not null;default:0" json:"price"`
+	DurationDays      int             `gorm:"default:0" json:"duration_days"`
+	Purchasable       bool            `gorm:"default:false" json:"purchasable"`
 	Enabled           bool            `gorm:"default:true" json:"enabled"`
 	CreatedAt         time.Time       `json:"created_at"`
 	UpdatedAt         time.Time       `json:"updated_at"`
@@ -82,6 +86,9 @@ type subscriptionPlanInput struct {
 	Name              string          `json:"name"`
 	ResetAmount       decimal.Decimal `json:"reset_amount"`
 	ResetIntervalDays int             `json:"reset_interval_days"`
+	Price             decimal.Decimal `json:"price"`
+	DurationDays      int             `json:"duration_days"`
+	Purchasable       *bool           `json:"purchasable"`
 	Enabled           *bool           `json:"enabled"`
 }
 
@@ -117,6 +124,8 @@ func registerSubscriptionAdminRoutes(group *gin.RouterGroup) {
 func registerSubscriptionUserRoutes(group *gin.RouterGroup) {
 	api := &subscriptionAPI{}
 	group.GET("/subscription", api.mySubscription)
+	group.GET("/subscription-plans", api.purchasablePlans)
+	group.POST("/subscription/purchase", api.purchaseSubscription)
 	group.POST("/redeem-code", api.redeemCode)
 }
 
@@ -182,6 +191,9 @@ func (api *subscriptionAPI) updatePlan(c *gin.Context) {
 		"name":                next.Name,
 		"reset_amount":        next.ResetAmount,
 		"reset_interval_days": next.ResetIntervalDays,
+		"price":               next.Price,
+		"duration_days":       next.DurationDays,
+		"purchasable":         next.Purchasable,
 		"enabled":             next.Enabled,
 	}
 	if err := model.DB.Model(&plan).Updates(updates).Error; err != nil {
@@ -228,11 +240,32 @@ func subscriptionPlanFromInput(c *gin.Context, input subscriptionPlanInput, fall
 		c.JSON(http.StatusBadRequest, gin.H{"error": "Reset interval must be greater than zero"})
 		return SubscriptionPlan{}, false
 	}
+	if input.Price.LessThan(decimal.Zero) {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Price must not be negative"})
+		return SubscriptionPlan{}, false
+	}
+	if input.DurationDays < 0 {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Duration must not be negative"})
+		return SubscriptionPlan{}, false
+	}
+	purchasable := input.Purchasable != nil && *input.Purchasable
+	if purchasable && input.Price.LessThanOrEqual(decimal.Zero) {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Purchasable plans require a price greater than zero"})
+		return SubscriptionPlan{}, false
+	}
 	enabled := fallbackEnabled
 	if input.Enabled != nil {
 		enabled = *input.Enabled
 	}
-	return SubscriptionPlan{Name: name, ResetAmount: input.ResetAmount, ResetIntervalDays: input.ResetIntervalDays, Enabled: enabled}, true
+	return SubscriptionPlan{
+		Name:              name,
+		ResetAmount:       input.ResetAmount,
+		ResetIntervalDays: input.ResetIntervalDays,
+		Price:             input.Price,
+		DurationDays:      input.DurationDays,
+		Purchasable:       purchasable,
+		Enabled:           enabled,
+	}, true
 }
 
 func (api *subscriptionAPI) listRedeemCodes(c *gin.Context) {
@@ -483,6 +516,121 @@ func (api *subscriptionAPI) mySubscription(c *gin.Context) {
 	c.JSON(http.StatusOK, subscriptions)
 }
 
+// purchasablePlans lists the enabled plans users can buy directly.
+func (api *subscriptionAPI) purchasablePlans(c *gin.Context) {
+	if !requireOperationModeFeature(c) {
+		return
+	}
+	var plans []SubscriptionPlan
+	if err := model.DB.Where("enabled = ? AND purchasable = ?", true, true).Order("price ASC, created_at DESC").Find(&plans).Error; err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	c.JSON(http.StatusOK, plans)
+}
+
+// purchaseSubscription buys a plan with wallet balance. Renewing an active
+// timed subscription extends its expiry instead of creating a parallel quota.
+func (api *subscriptionAPI) purchaseSubscription(c *gin.Context) {
+	if !requireOperationModeFeature(c) {
+		return
+	}
+	user, ok := currentPremiumUser(c)
+	if !ok {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "Unauthorized"})
+		return
+	}
+	var input struct {
+		PlanID uint `json:"plan_id"`
+	}
+	if err := c.ShouldBindJSON(&input); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+	var plan SubscriptionPlan
+	if err := model.DB.Where("id = ? AND enabled = ? AND purchasable = ?", input.PlanID, true, true).First(&plan).Error; err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Subscription plan is not available for purchase"})
+		return
+	}
+	if plan.Price.LessThanOrEqual(decimal.Zero) {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Subscription plan is not available for purchase"})
+		return
+	}
+
+	now := time.Now()
+	var existing UserSubscription
+	hasExisting := activeSubscriptions(model.DB, user.ID, now).Where("plan_id = ?", plan.ID).Order("id DESC").First(&existing).Error == nil
+	if hasExisting && (plan.DurationDays <= 0 || existing.ActiveUntil == nil) {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "You already have an active subscription for this plan"})
+		return
+	}
+
+	purchaseRef, err := generatePremiumRedeemCode()
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to create purchase reference"})
+		return
+	}
+	settlement, err := communityservice.SettleWallet(c.Request.Context(), communityservice.WalletSettlementInput{
+		UserID:         user.ID,
+		Source:         "subscription_purchase",
+		IdempotencyKey: purchaseRef,
+		DebitAmount:    plan.Price,
+		ReferenceType:  "subscription_plan",
+		ReferenceID:    strconv.FormatUint(uint64(plan.ID), 10),
+		Description:    "Purchase subscription plan: " + plan.Name,
+	})
+	if err != nil {
+		if errors.Is(err, communityservice.ErrInsufficientBalance) {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "Insufficient balance"})
+			return
+		}
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+
+	grantErr := model.DB.Transaction(func(tx *gorm.DB) error {
+		if hasExisting && existing.ActiveUntil != nil && plan.DurationDays > 0 {
+			renewed := existing.ActiveUntil.AddDate(0, 0, plan.DurationDays)
+			result := tx.Model(&UserSubscription{}).Where("id = ?", existing.ID).Update("active_until", renewed)
+			if result.Error != nil {
+				return result.Error
+			}
+			if result.RowsAffected > 0 {
+				return nil
+			}
+		}
+		return grantPremiumSubscription(tx, user.ID, plan.ID, plan.DurationDays, true)
+	})
+	if grantErr != nil {
+		// Refund the debit so a failed grant never costs the user.
+		_, refundErr := communityservice.SettleWallet(c.Request.Context(), communityservice.WalletSettlementInput{
+			UserID:         user.ID,
+			Source:         "subscription_purchase_refund",
+			IdempotencyKey: purchaseRef,
+			CreditAmount:   plan.Price,
+			ReferenceType:  "subscription_plan",
+			ReferenceID:    strconv.FormatUint(uint64(plan.ID), 10),
+			Description:    "Refund failed subscription purchase: " + plan.Name,
+		})
+		if refundErr != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "Subscription grant failed and refund failed; contact support"})
+			return
+		}
+		c.JSON(http.StatusInternalServerError, gin.H{"error": grantErr.Error()})
+		return
+	}
+
+	var subscriptions []UserSubscription
+	if err := activeSubscriptions(model.DB, user.ID, time.Now()).Preload("Plan").Find(&subscriptions).Error; err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{
+		"balance":       settlement.Transaction.BalanceAfter,
+		"subscriptions": subscriptions,
+	})
+}
+
 func applySubscriptionUsageCharge(tx *gorm.DB, userID uint, cost decimal.Decimal) error {
 	if cost.LessThanOrEqual(decimal.Zero) {
 		return nil
@@ -504,10 +652,16 @@ func applySubscriptionUsageCharge(tx *gorm.DB, userID uint, cost decimal.Decimal
 		if deduction.LessThanOrEqual(decimal.Zero) {
 			continue
 		}
-		if err := tx.Model(&UserSubscription{}).Where("id = ? AND balance >= ?", subscription.ID, deduction).UpdateColumn("balance", gorm.Expr("balance - ?", deduction)).Error; err != nil {
-			return err
+		update := tx.Model(&UserSubscription{}).Where("id = ? AND balance >= ?", subscription.ID, deduction).UpdateColumn("balance", gorm.Expr("balance - ?", deduction))
+		if update.Error != nil {
+			return update.Error
 		}
-		remaining = remaining.Sub(deduction)
+		// A concurrent charge may have drained this subscription first; only
+		// count the deduction when it actually applied, otherwise the shortfall
+		// must fall through to the next subscription or the wallet balance.
+		if update.RowsAffected > 0 {
+			remaining = remaining.Sub(deduction)
+		}
 	}
 	if remaining.LessThanOrEqual(decimal.Zero) {
 		return nil
