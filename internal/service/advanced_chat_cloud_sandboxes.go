@@ -348,6 +348,25 @@ func validateCloudSandboxInput(input advancedChatCloudSandboxInput) error {
 	return nil
 }
 
+// cloudSandboxImageAllowed mirrors the sandboxd worker's allowed_images
+// semantics: a missing or empty whitelist permits any image.
+func cloudSandboxImageAllowed(policyJSON, image string) bool {
+	var policy map[string]interface{}
+	if err := json.Unmarshal([]byte(policyJSON), &policy); err != nil {
+		return true
+	}
+	items, ok := policy["allowed_images"].([]interface{})
+	if !ok || len(items) == 0 {
+		return true
+	}
+	for _, item := range items {
+		if allowed, ok := item.(string); ok && strings.TrimSpace(allowed) == image {
+			return true
+		}
+	}
+	return false
+}
+
 func (api *advancedChatAPI) listCloudSandboxes(c *gin.Context) {
 	user, ok := currentAdvancedChatUser(c)
 	if !ok {
@@ -382,7 +401,12 @@ func (api *advancedChatAPI) createCloudSandbox(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "Sandbox host is unavailable"})
 		return
 	}
-	sandbox := AdvancedChatCloudSandbox{ID: newAdvancedChatID("acs"), UserID: user.ID, HostID: host.ID, Name: truncateConnectorField(input.Name, 120), Image: strings.TrimSpace(input.Image), CPUCores: input.CPUCores, MemoryMB: input.MemoryMB, DiskGB: input.DiskGB, Status: advancedChatCloudSandboxReady, CreatedAt: time.Now(), UpdatedAt: time.Now()}
+	image := strings.TrimSpace(input.Image)
+	if !cloudSandboxImageAllowed(host.SecurityPolicy, image) {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Container image is not allowed by this host policy"})
+		return
+	}
+	sandbox := AdvancedChatCloudSandbox{ID: newAdvancedChatID("acs"), UserID: user.ID, HostID: host.ID, Name: truncateConnectorField(input.Name, 120), Image: image, CPUCores: input.CPUCores, MemoryMB: input.MemoryMB, DiskGB: input.DiskGB, Status: advancedChatCloudSandboxReady, CreatedAt: time.Now(), UpdatedAt: time.Now()}
 	if err := model.DB.Create(&sandbox).Error; err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to create cloud sandbox"})
 		return
