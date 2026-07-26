@@ -634,6 +634,33 @@ func (api *subscriptionAPI) purchaseSubscription(c *gin.Context) {
 	})
 }
 
+// HasSpendableCredit reports whether the user can pay for a request at all.
+// Usage is charged against subscription quota before the wallet, so rejecting a
+// request on a zero wallet balance alone would deny service to users whose paid
+// subscription still has quota. A subscription already due for reset counts as
+// well: applySubscriptionUsageCharge refills it before charging, so its stored
+// balance being zero right now says nothing about what it can pay.
+func HasSpendableCredit(user *model.User) bool {
+	if user == nil {
+		return false
+	}
+	if user.Balance.GreaterThan(decimal.Zero) {
+		return true
+	}
+	if model.DB == nil {
+		return false
+	}
+	now := time.Now()
+	var count int64
+	if err := activeSubscriptions(model.DB, user.ID, now).
+		Model(&UserSubscription{}).
+		Where("balance > ? OR next_reset_at <= ?", decimal.Zero, now).
+		Count(&count).Error; err != nil {
+		return false
+	}
+	return count > 0
+}
+
 func applySubscriptionUsageCharge(tx *gorm.DB, userID uint, cost decimal.Decimal) error {
 	if cost.LessThanOrEqual(decimal.Zero) {
 		return nil

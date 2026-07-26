@@ -1143,7 +1143,7 @@ func (s *ProxyService) resolveTarget(c *gin.Context, modelName string) (*proxyTa
 		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "No enabled model configuration for this model"})
 		return nil, false
 	}
-	if !PersonalModeEnabled() && user.Balance.LessThanOrEqual(decimal.Zero) {
+	if !PersonalModeEnabled() && !HasSpendableCredit(user) {
 		c.JSON(http.StatusPaymentRequired, gin.H{"error": "Insufficient balance"})
 		return nil, false
 	}
