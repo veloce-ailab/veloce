@@ -106,7 +106,9 @@ func openLogDatabase(path string) (*gorm.DB, error) {
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 		return nil, fmt.Errorf("create log directory: %w", err)
 	}
-	database, err := gorm.Open(sqlite.Open(sqliteDSN(path)), &gorm.Config{DisableForeignKeyConstraintWhenMigrating: true})
+	logConfig := gormConfig()
+	logConfig.DisableForeignKeyConstraintWhenMigrating = true
+	database, err := gorm.Open(sqlite.Open(sqliteDSN(path)), logConfig)
 	if err != nil {
 		return nil, fmt.Errorf("open log database %q: %w", path, err)
 	}

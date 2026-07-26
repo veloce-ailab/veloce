@@ -6,6 +6,7 @@ import (
 	"encoding/base32"
 	"fmt"
 	"log"
+	"os"
 	"strings"
 	"time"
 
@@ -15,16 +16,31 @@ import (
 	"gorm.io/driver/mysql"
 	"gorm.io/driver/postgres"
 	"gorm.io/gorm"
+	gormlogger "gorm.io/gorm/logger"
 )
 
 var DB *gorm.DB
+
+// gormConfig 统一的 GORM 配置：忽略 ErrRecordNotFound 日志。
+// First/Take 查不到记录属于正常业务分支（例如价格同步时判断模型是否已存在），
+// GORM 默认 logger 却会把每次未命中都作为 ERROR 打到终端，产生大量日志噪音。
+func gormConfig() *gorm.Config {
+	return &gorm.Config{
+		Logger: gormlogger.New(log.New(os.Stdout, "\r\n", log.LstdFlags), gormlogger.Config{
+			SlowThreshold:             200 * time.Millisecond,
+			LogLevel:                  gormlogger.Warn,
+			IgnoreRecordNotFoundError: true,
+			Colorful:                  true,
+		}),
+	}
+}
 
 func InitDB() {
 	dialector, isSQLite, err := databaseDialector()
 	if err != nil {
 		log.Fatal(err)
 	}
-	DB, err = gorm.Open(dialector, &gorm.Config{})
+	DB, err = gorm.Open(dialector, gormConfig())
 	if err != nil {
 		log.Fatalf("failed to connect database: %v", err)
 	}
