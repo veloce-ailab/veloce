@@ -1,4 +1,4 @@
-package premium
+package service
 
 import (
 	cryptorand "crypto/rand"
@@ -13,7 +13,6 @@ import (
 	"time"
 
 	"github.com/veloce-ailab/veloce/internal/model"
-	communityservice "github.com/veloce-ailab/veloce/internal/service"
 	"github.com/gin-gonic/gin"
 	"github.com/shopspring/decimal"
 )
@@ -60,11 +59,15 @@ type metaModelInput struct {
 	Enabled          *bool           `json:"enabled"`
 }
 
-func initMetaModelFeatures() error {
+func init() {
+	model.RegisterSQLiteMigrationModels(&MetaModel{})
+}
+
+func InitMetaModelFeatures() error {
 	return model.DB.AutoMigrate(&MetaModel{})
 }
 
-func registerMetaModelAdminRoutes(group *gin.RouterGroup) {
+func RegisterMetaModelAdminRoutes(group *gin.RouterGroup) {
 	api := &metaModelAPI{}
 	group.GET("/meta-models", api.list)
 	group.POST("/meta-models", api.create)
@@ -330,7 +333,7 @@ func collectReferencedMetaActionModels(action MetaAction, models map[string]stru
 	}
 }
 
-func listMetaModelNames(c *gin.Context) ([]string, error) {
+func ListMetaModelNamesForRequest(c *gin.Context) ([]string, error) {
 	var names []string
 	if err := model.DB.Model(&MetaModel{}).Where("enabled = ?", true).Pluck("name", &names).Error; err != nil {
 		return nil, err
@@ -339,18 +342,18 @@ func listMetaModelNames(c *gin.Context) ([]string, error) {
 	return names, nil
 }
 
-func listMetaModelCatalog(c *gin.Context) ([]communityservice.MetaModelCatalogItem, error) {
+func ListMetaModelCatalogForRequest(c *gin.Context) ([]MetaModelCatalogItem, error) {
 	var items []MetaModel
 	if err := model.DB.Where("enabled = ?", true).Order("name ASC").Find(&items).Error; err != nil {
 		return nil, err
 	}
-	catalog := make([]communityservice.MetaModelCatalogItem, 0, len(items))
+	catalog := make([]MetaModelCatalogItem, 0, len(items))
 	for _, item := range items {
 		plan, err := ParseMetaModuleDSL(item.DSL)
 		if err != nil {
 			return nil, err
 		}
-		catalog = append(catalog, communityservice.MetaModelCatalogItem{
+		catalog = append(catalog, MetaModelCatalogItem{
 			Name:                   item.Name,
 			Description:            item.Description,
 			Provider:               normalizeMetaProvider(item.Provider),
@@ -367,17 +370,17 @@ func listMetaModelCatalog(c *gin.Context) ([]communityservice.MetaModelCatalogIt
 	return catalog, nil
 }
 
-func resolveMetaModel(c *gin.Context, input communityservice.MetaModelResolveInput) (communityservice.MetaModelResolveResult, error) {
+func ResolveMetaModelForRequest(c *gin.Context, input MetaModelResolveInput) (MetaModelResolveResult, error) {
 	var meta MetaModel
 	queryResult := model.DB.Where("name = ? AND enabled = ?", strings.TrimSpace(input.ModelName), true).Limit(1).Find(&meta)
 	if queryResult.Error != nil {
-		return communityservice.MetaModelResolveResult{}, queryResult.Error
+		return MetaModelResolveResult{}, queryResult.Error
 	}
 	if queryResult.RowsAffected == 0 {
-		return communityservice.MetaModelResolveResult{}, nil
+		return MetaModelResolveResult{}, nil
 	}
 	if !metaModelAllowedByAPIKey(c, meta.Name) {
-		return communityservice.MetaModelResolveResult{
+		return MetaModelResolveResult{
 			Matched:      true,
 			ErrorStatus:  http.StatusForbidden,
 			ErrorMessage: "API key is not allowed to use this meta model",
@@ -386,18 +389,18 @@ func resolveMetaModel(c *gin.Context, input communityservice.MetaModelResolveInp
 
 	plan, err := ParseMetaModuleDSL(meta.DSL)
 	if err != nil {
-		return communityservice.MetaModelResolveResult{}, err
+		return MetaModelResolveResult{}, err
 	}
 	vars := metaRuntimeVariables(c, meta.Name, input)
 	modelName, err := resolveMetaAction(plan.Root, vars)
 	if err != nil {
-		return communityservice.MetaModelResolveResult{
+		return MetaModelResolveResult{
 			Matched:      true,
 			ErrorStatus:  http.StatusBadRequest,
 			ErrorMessage: err.Error(),
 		}, nil
 	}
-	result := communityservice.MetaModelResolveResult{
+	result := MetaModelResolveResult{
 		Matched:              true,
 		ModelName:            modelName,
 		BillingMode:          normalizeMetaBillingMode(meta.BillingMode),
@@ -423,7 +426,7 @@ func metaModelAllowedByAPIKey(c *gin.Context, modelName string) bool {
 	if !ok || apiKey == nil {
 		return true
 	}
-	return communityservice.APIKeyAllowsModel(apiKey, modelName)
+	return APIKeyAllowsModel(apiKey, modelName)
 }
 
 func resolveMetaAction(action MetaAction, vars map[string]MetaValue) (string, error) {
@@ -593,8 +596,8 @@ func metaValuesEqual(left MetaValue, right MetaValue) (bool, error) {
 	}
 }
 
-func metaRuntimeVariables(c *gin.Context, metaModelName string, input communityservice.MetaModelResolveInput) map[string]MetaValue {
-	inputTokens := communityservice.CountTokens(metaModelName, string(input.OriginalBody))
+func metaRuntimeVariables(c *gin.Context, metaModelName string, input MetaModelResolveInput) map[string]MetaValue {
+	inputTokens := CountTokens(metaModelName, string(input.OriginalBody))
 	maxOutputTokens := numberFromRequest(input.RequestBody, "max_tokens", "max_completion_tokens", "maxOutputTokens")
 	requestText := metaRequestText(input.RequestBody)
 	lastUserMessage := metaLastMessageText(input.RequestBody, "user")
@@ -827,7 +830,7 @@ func requestContainsKeySet(value interface{}, keys map[string]struct{}) bool {
 }
 
 func userBalance(c *gin.Context) float64 {
-	if communityservice.PersonalModeEnabled() {
+	if PersonalModeEnabled() {
 		return -1
 	}
 	if c == nil {
@@ -868,7 +871,7 @@ func userRuntimeValues(c *gin.Context) (uint, string, bool) {
 }
 
 func apiKeyRuntimeValues(c *gin.Context) (string, float64) {
-	if communityservice.PersonalModeEnabled() {
+	if PersonalModeEnabled() {
 		return "", -1
 	}
 	if c == nil {
@@ -887,7 +890,7 @@ func apiKeyRuntimeValues(c *gin.Context) (string, float64) {
 }
 
 func apiKeyQuotaRemaining(c *gin.Context) float64 {
-	if communityservice.PersonalModeEnabled() {
+	if PersonalModeEnabled() {
 		return -1
 	}
 	if c == nil {
@@ -901,7 +904,7 @@ func apiKeyQuotaRemaining(c *gin.Context) float64 {
 	if !ok || apiKey == nil || apiKey.QuotaLimit.LessThanOrEqual(decimal.Zero) {
 		return 0
 	}
-	used, err := communityservice.APIKeyUsageCost(model.DB, apiKey.ID, apiKey.UserID)
+	used, err := APIKeyUsageCost(model.DB, apiKey.ID, apiKey.UserID)
 	if err != nil {
 		return 0
 	}

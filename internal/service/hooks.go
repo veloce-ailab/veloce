@@ -17,9 +17,6 @@ var ErrInsufficientBalance = errors.New("insufficient balance")
 
 type StartupHook func() error
 type RouteHook func(*gin.RouterGroup)
-type MetaModelListHook func(*gin.Context) ([]string, error)
-type MetaModelResolveHook func(*gin.Context, MetaModelResolveInput) (MetaModelResolveResult, error)
-type MetaModelCatalogHook func(*gin.Context) ([]MetaModelCatalogItem, error)
 type GeneratedAssetHook func(context.Context, GeneratedAssetInput)
 type AdvancedChatStorageUsageHook func(userID uint) int64
 type AdvancedChatStorageUsageWithDBHook func(db *gorm.DB, userID uint) (int64, error)
@@ -97,9 +94,6 @@ var startupHooks []StartupHook
 var publicAPIRouteHooks []RouteHook
 var adminRouteHooks []RouteHook
 var userRouteHooks []RouteHook
-var metaModelListHook MetaModelListHook
-var metaModelResolveHook MetaModelResolveHook
-var metaModelCatalogHook MetaModelCatalogHook
 var generatedAssetHook GeneratedAssetHook
 var advancedChatStorageUsageHooks []AdvancedChatStorageUsageHook
 var advancedChatStorageUsageWithDBHooks []AdvancedChatStorageUsageWithDBHook
@@ -158,15 +152,6 @@ func ApplyUserRouteHooks(group *gin.RouterGroup) {
 	}
 }
 
-func RegisterMetaModelHooks(listHook MetaModelListHook, resolveHook MetaModelResolveHook) {
-	metaModelListHook = listHook
-	metaModelResolveHook = resolveHook
-}
-
-func RegisterMetaModelCatalogHook(hook MetaModelCatalogHook) {
-	metaModelCatalogHook = hook
-}
-
 func RegisterGeneratedAssetHook(hook GeneratedAssetHook) {
 	generatedAssetHook = hook
 }
@@ -199,17 +184,11 @@ func RegisterAdvancedChatToolHandler(name string, handler AdvancedChatToolHandle
 }
 
 func ListMetaModelNames(c *gin.Context) ([]string, error) {
-	if metaModelListHook == nil {
-		return nil, nil
-	}
-	return metaModelListHook(c)
+	return ListMetaModelNamesForRequest(c)
 }
 
 func ListMetaModelCatalog(c *gin.Context) ([]MetaModelCatalogItem, error) {
-	if metaModelCatalogHook == nil {
-		return nil, nil
-	}
-	return metaModelCatalogHook(c)
+	return ListMetaModelCatalogForRequest(c)
 }
 
 func ApplyGeneratedAssetHook(ctx context.Context, input GeneratedAssetInput) {
@@ -287,10 +266,7 @@ func HandleAdvancedChatToolCall(ctx context.Context, input AdvancedChatToolCallI
 }
 
 func ResolveMetaModel(c *gin.Context, input MetaModelResolveInput) (MetaModelResolveResult, error) {
-	if metaModelResolveHook == nil {
-		return MetaModelResolveResult{}, nil
-	}
-	result, err := metaModelResolveHook(c, input)
+	result, err := ResolveMetaModelForRequest(c, input)
 	if result.ErrorStatus == 0 && result.ErrorMessage != "" {
 		result.ErrorStatus = http.StatusBadRequest
 	}
