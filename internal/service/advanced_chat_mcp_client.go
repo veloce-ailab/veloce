@@ -60,7 +60,7 @@ func newMCPClient(url string, headers map[string]string) *mcpClient {
 	return &mcpClient{
 		url:        strings.TrimSpace(url),
 		headers:    headers,
-		httpClient: &http.Client{Timeout: mcpRequestTimeout},
+		httpClient: &http.Client{Timeout: mcpRequestTimeout, CheckRedirect: GuardedRedirectPolicy()},
 	}
 }
 

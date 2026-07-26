@@ -863,6 +863,10 @@ func saveGeneratedAdvancedChatFile(ctx context.Context, userID uint, kind string
 	return err
 }
 
+// Generated assets are fetched from upstream-supplied URLs, so redirects must be
+// re-validated instead of silently following them past the SSRF guard.
+var generatedAssetDownloadClient = &http.Client{Timeout: 60 * time.Second, CheckRedirect: GuardedRedirectPolicy()}
+
 func downloadGeneratedAdvancedChatFile(ctx context.Context, userID uint, rawURL string, mimeType string, name string) ([]byte, string, string, error) {
 	rawURL = strings.TrimSpace(rawURL)
 	if err := ValidateOutboundHTTPURL(rawURL, CurrentURLGuardOptions()); err != nil {
@@ -876,7 +880,7 @@ func downloadGeneratedAdvancedChatFile(ctx context.Context, userID uint, rawURL 
 	if err != nil {
 		return nil, "", "", err
 	}
-	resp, err := http.DefaultClient.Do(req)
+	resp, err := generatedAssetDownloadClient.Do(req)
 	if err != nil {
 		return nil, "", "", err
 	}

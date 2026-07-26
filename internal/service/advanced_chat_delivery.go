@@ -57,7 +57,7 @@ type advancedChatDeliveryInput struct {
 	Enabled        *bool  `json:"enabled"`
 }
 
-var advancedChatDeliveryHTTPClient = &http.Client{Timeout: 20 * time.Second}
+var advancedChatDeliveryHTTPClient = &http.Client{Timeout: 20 * time.Second, CheckRedirect: GuardedRedirectPolicy()}
 
 func (api *advancedChatAPI) listDeliveries(c *gin.Context) {
 	if !advancedChatMessageDeliveryEnabled() {
