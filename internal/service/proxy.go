@@ -159,7 +159,7 @@ func (s *ProxyService) ListModels(c *gin.Context) {
 		Where("channels.enabled = ? AND model_configs.enabled = ? AND models.enabled = ? AND user_channels.enabled = ?", true, true, true, true)
 	allowedUserChannels, ok := requiredAPIKeyUserChannels(apiKey)
 	if !ok {
-		c.JSON(http.StatusForbidden, gin.H{"error": "API key must be bound to exactly one user channel"})
+		c.JSON(http.StatusForbidden, gin.H{"error": "API key must be bound to at least one user channel"})
 		return
 	}
 	if len(allowedUserChannels) > 0 {
@@ -959,64 +959,104 @@ func (s *ProxyService) handleConvertedProviderRequest(c *gin.Context, clientProt
 		}
 	}
 
-	target, ok := s.resolveTarget(c, modelName)
+	targets, ok := s.resolveTargets(c, modelName)
 	if !ok {
 		return
 	}
-	if metaResolution.Matched && metaResolution.BillingMode == "meta" && metaResolution.BillingModel != nil {
-		target.BillingModel = metaResolution.BillingModel
-		target.BillingModelName = metaResolution.BillingModel.ModelName
-	}
 
-	normalized := normalizeProviderRequest(clientProtocol, c.Request.URL.Path, requestBody, target.upstreamModelName())
+	// 敏感词只依赖请求文本，与具体目标无关，循环外检查一次即可
 	if SensitiveFilterEnabled() {
+		normalized := normalizeProviderRequest(clientProtocol, c.Request.URL.Path, requestBody, targets[0].upstreamModelName())
 		if _, matched := MatchSensitiveWords(normalizedRequestText(normalized)); matched {
 			c.JSON(http.StatusForbidden, gin.H{"error": "Request blocked by content policy", "type": "content_policy"})
 			return
 		}
 	}
+
+	// 自动分组：按令牌中用户渠道的顺序依次尝试，上一个出错则顺延到下一个；
+	// 只有最后一个目标的错误才会返回给客户端。
+	for index, target := range targets {
+		if metaResolution.Matched && metaResolution.BillingMode == "meta" && metaResolution.BillingModel != nil {
+			target.BillingModel = metaResolution.BillingModel
+			target.BillingModelName = metaResolution.BillingModel.ModelName
+		}
+		stashUpstreamFailureTarget(c, target)
+		if index > 0 {
+			log.Printf(
+				"user channel failover: model=%s attempt=%d/%d channel_id=%d user_channel_id=%v",
+				modelName, index+1, len(targets), target.Channel.ID, target.Channel.UserChannelID,
+			)
+		}
+		if s.forwardProviderRequestToTarget(c, clientProtocol, target, requestBody, originalBody, index == len(targets)-1) {
+			return
+		}
+	}
+}
+
+// forwardProviderRequestToTarget attempts one upstream call for the target.
+// It returns true when the response (success or error) has been written to
+// the client, and false when nothing was written and the caller may fail over
+// to the next target. When finalAttempt is true every error is written.
+func (s *ProxyService) forwardProviderRequestToTarget(c *gin.Context, clientProtocol proxyProtocol, target *proxyTarget, requestBody map[string]interface{}, originalBody []byte, finalAttempt bool) bool {
+	normalized := normalizeProviderRequest(clientProtocol, c.Request.URL.Path, requestBody, target.upstreamModelName())
 	pluginUpstream, isPluginUpstream := PluginUpstreamForType(target.Channel.Type)
 	if strings.HasPrefix(strings.TrimSpace(target.Channel.Type), pluginUpstreamPrefix) && !isPluginUpstream {
+		if !finalAttempt {
+			return false
+		}
 		c.JSON(http.StatusBadRequest, gin.H{"error": "The plugin upstream channel is unavailable", "type": "unsupported_upstream"})
-		return
+		return true
 	}
 	upstreamProtocol := channelProtocol(target.Channel.Type)
 	if isPluginUpstream {
 		upstreamProtocol = protocolResponses
 		if clientProtocol != protocolResponses {
+			if !finalAttempt {
+				return false
+			}
 			c.JSON(http.StatusBadRequest, gin.H{"error": "This plugin upstream only supports the OpenAI Responses API", "type": "unsupported_upstream"})
-			return
+			return true
 		}
 	}
 	compactRequest := strings.HasSuffix(strings.TrimRight(c.Request.URL.Path, "/"), "/responses/compact")
 	if normalized.Stream && upstreamProtocol != clientProtocol {
+		if !finalAttempt {
+			return false
+		}
 		c.JSON(http.StatusBadRequest, gin.H{"error": "Streaming is not supported when converting upstream protocol", "type": "unsupported_stream"})
-		return
+		return true
 	}
 
 	if !isPluginUpstream {
 		if err := ValidateConfiguredHTTPURL(target.Channel.BaseURL); err != nil {
+			if !finalAttempt {
+				return false
+			}
 			c.JSON(http.StatusBadGateway, gin.H{"error": "Upstream URL blocked by SSRF protection", "type": "upstream_error"})
-			return
+			return true
 		}
 	}
 
 	var prepared preparedUpstreamRequest
+	var err error
 	if isPluginUpstream {
 		payload, payloadErr := openAIResponsesPayloadMap(normalized)
 		if payloadErr != nil {
 			c.JSON(http.StatusBadRequest, gin.H{"error": payloadErr.Error(), "type": "invalid_request"})
-			return
+			return true
 		}
 		pluginPrepared, pluginErr := PreparePluginUpstreamRequest(c.Request.Context(), pluginUpstream, target.User.ID, newPluginRequestID(), target.Channel, payload, normalized.Stream, compactRequest)
 		if pluginErr != nil {
+			if !finalAttempt {
+				return false
+			}
 			c.JSON(http.StatusBadGateway, gin.H{"error": pluginErr.Error(), "type": "upstream_error"})
-			return
+			return true
 		}
 		if pluginPrepared.APIKey != "" && pluginPrepared.APIKey != target.Channel.APIKey {
 			if err := model.DB.Model(&model.Channel{}).Where("id = ?", target.Channel.ID).Update("api_key", pluginPrepared.APIKey).Error; err != nil {
 				c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to save refreshed upstream credential"})
-				return
+				return true
 			}
 			target.Channel.APIKey = pluginPrepared.APIKey
 		}
@@ -1025,15 +1065,21 @@ func (s *ProxyService) handleConvertedProviderRequest(c *gin.Context, clientProt
 		prepared, err = prepareProviderRequest(&target.Channel, upstreamProtocol, normalized)
 	}
 	if err != nil {
+		if !finalAttempt {
+			return false
+		}
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error(), "type": "invalid_request"})
-		return
+		return true
 	}
 	prepared.Context = c.Request.Context()
 	resp, err := s.doUpstreamRequest(prepared, &target.Channel)
 	if err != nil {
 		logUpstreamRequestFailure(c, &target.Channel, prepared.URL, prepared.Body, err)
+		if !finalAttempt {
+			return false
+		}
 		c.JSON(http.StatusBadGateway, gin.H{"error": "Upstream request failed", "type": "upstream_error"})
-		return
+		return true
 	}
 	markTokenLogFirstResponse(c)
 	defer resp.Body.Close()
@@ -1041,18 +1087,24 @@ func (s *ProxyService) handleConvertedProviderRequest(c *gin.Context, clientProt
 	if resp.StatusCode >= http.StatusBadRequest {
 		respBody, err := io.ReadAll(resp.Body)
 		if err != nil {
+			if !finalAttempt {
+				return false
+			}
 			c.JSON(http.StatusBadGateway, gin.H{"error": "Failed to read upstream response"})
-			return
+			return true
 		}
 		logUpstreamError(c, &target.Channel, prepared.URL, resp.StatusCode, prepared.Body, respBody)
+		if !finalAttempt {
+			return false
+		}
 		c.JSON(resp.StatusCode, gin.H{"error": "Upstream request failed", "type": "upstream_error"})
-		return
+		return true
 	}
 
 	if normalized.Stream || isStreamingResponse(resp) {
 		if upstreamProtocol != clientProtocol {
 			c.JSON(http.StatusBadRequest, gin.H{"error": "Streaming is not supported when converting upstream protocol", "type": "unsupported_stream"})
-			return
+			return true
 		}
 		respBody, streamErr := streamUpstreamResponse(c, resp)
 		if streamErr != nil {
@@ -1071,13 +1123,25 @@ func (s *ProxyService) handleConvertedProviderRequest(c *gin.Context, clientProt
 		if _, _, err := s.billDeliveredUsage(c, target.User, target.APIKey, &target.Channel, &target.ModelConfig, target.billingModelName(), usage, target.billingModel()); err != nil {
 			log.Printf("failed to bill streaming usage for user=%d model=%s: %v", target.User.ID, target.ModelName, err)
 		}
-		return
+		return true
 	}
 
 	s.handleNonStreamingResponse(c, resp, target, originalBody, prepared.URL, prepared.Body, upstreamProtocol, clientProtocol, clientProtocol == protocolResponses)
+	return true
 }
 
 func (s *ProxyService) resolveTarget(c *gin.Context, modelName string) (*proxyTarget, bool) {
+	targets, ok := s.resolveTargets(c, modelName)
+	if !ok {
+		return nil, false
+	}
+	return targets[0], true
+}
+
+// resolveTargets resolves proxy targets in failover order. The first target is
+// the primary choice; the rest are fallbacks from the API key's remaining user
+// channels, in the order the key lists them.
+func (s *ProxyService) resolveTargets(c *gin.Context, modelName string) ([]*proxyTarget, bool) {
 	val, _ := c.Get("user")
 	user, ok := val.(*model.User)
 	if !ok || user == nil {
@@ -1117,7 +1181,7 @@ func (s *ProxyService) resolveTarget(c *gin.Context, modelName string) (*proxyTa
 		Where("channels.enabled = ? AND model_configs.enabled = ? AND models.enabled = ? AND models.model_name = ? AND user_channels.enabled = ?", true, true, true, modelName, true)
 	allowedUserChannels, ok := requiredAPIKeyUserChannels(apiKey)
 	if !ok {
-		c.JSON(http.StatusForbidden, gin.H{"error": "API key must be bound to exactly one user channel"})
+		c.JSON(http.StatusForbidden, gin.H{"error": "API key must be bound to at least one user channel"})
 		return nil, false
 	}
 	if len(allowedUserChannels) > 0 {
@@ -1136,13 +1200,6 @@ func (s *ProxyService) resolveTarget(c *gin.Context, modelName string) (*proxyTa
 		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "No available channel for this model"})
 		return nil, false
 	}
-	modelConfig := s.selectModelConfig(candidates, modelName)
-
-	channel := modelConfig.Channel
-	if channel.ID == 0 {
-		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "No enabled model configuration for this model"})
-		return nil, false
-	}
 	if !PersonalModeEnabled() && !HasSpendableCredit(user) {
 		c.JSON(http.StatusPaymentRequired, gin.H{"error": "Insufficient balance"})
 		return nil, false
@@ -1155,17 +1212,53 @@ func (s *ProxyService) resolveTarget(c *gin.Context, modelName string) (*proxyTa
 		return nil, false
 	}
 
-	target := &proxyTarget{
-		User:        user,
-		APIKey:      apiKey,
-		ModelName:   modelName,
-		ModelConfig: modelConfig,
-		Channel:     channel,
+	targets := make([]*proxyTarget, 0, 1)
+	for _, group := range groupCandidatesByUserChannel(candidates, allowedUserChannels) {
+		modelConfig := s.selectModelConfig(group, modelName)
+		if modelConfig.Channel.ID == 0 {
+			continue
+		}
+		targets = append(targets, &proxyTarget{
+			User:        user,
+			APIKey:      apiKey,
+			ModelName:   modelName,
+			ModelConfig: modelConfig,
+			Channel:     modelConfig.Channel,
+		})
+	}
+	if len(targets) == 0 {
+		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "No enabled model configuration for this model"})
+		return nil, false
 	}
 	// 暂存已解析的目标：若之后上级调用失败（未计费），
 	// UpstreamFailureLogMiddleware 会用它补记一条零费用的失败明细
-	stashUpstreamFailureTarget(c, target)
-	return target, true
+	stashUpstreamFailureTarget(c, targets[0])
+	return targets, true
+}
+
+// groupCandidatesByUserChannel splits candidates into failover groups. With
+// zero or one bound user channel the previous single-group behaviour is kept;
+// with several, groups follow the API key's channel order so that a failed
+// upstream call falls through to the next user channel.
+func groupCandidatesByUserChannel(candidates []model.ModelConfig, orderedUserChannels []uint) [][]model.ModelConfig {
+	if len(orderedUserChannels) <= 1 {
+		return [][]model.ModelConfig{candidates}
+	}
+	byChannel := map[uint][]model.ModelConfig{}
+	for _, candidate := range candidates {
+		if candidate.Channel.UserChannelID == nil {
+			continue
+		}
+		id := *candidate.Channel.UserChannelID
+		byChannel[id] = append(byChannel[id], candidate)
+	}
+	groups := make([][]model.ModelConfig, 0, len(orderedUserChannels))
+	for _, id := range orderedUserChannels {
+		if group, ok := byChannel[id]; ok {
+			groups = append(groups, group)
+		}
+	}
+	return groups
 }
 
 func (target *proxyTarget) upstreamModelName() string {
@@ -1968,6 +2061,9 @@ func apiKeyAllowedUserChannels(apiKey *model.APIKey) string {
 	return apiKey.AllowedUserChannels
 }
 
+// requiredAPIKeyUserChannels returns the API key's bound user channels in
+// stored order. One channel is the normal binding; several channels form an
+// automatic failover sequence tried front to back.
 func requiredAPIKeyUserChannels(apiKey *model.APIKey) ([]uint, bool) {
 	if PersonalModeEnabled() {
 		return nil, true
@@ -1975,8 +2071,8 @@ func requiredAPIKeyUserChannels(apiKey *model.APIKey) ([]uint, bool) {
 	if apiKey == nil {
 		return nil, true
 	}
-	allowed := ParseUintList(apiKeyAllowedUserChannels(apiKey))
-	return allowed, len(allowed) == 1
+	allowed := ParseOrderedUintList(apiKeyAllowedUserChannels(apiKey))
+	return allowed, len(allowed) >= 1
 }
 
 func isStreamingRequest(requestBody map[string]interface{}) bool {

@@ -4642,7 +4642,7 @@ func (api *UserAPI) CreateAPIKey(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 		return
 	}
-	userChannelID, err := validateAPIKeyUserChannel(input.AllowedUserChannels)
+	userChannelIDs, err := validateAPIKeyUserChannels(input.AllowedUserChannels)
 	if err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 		return
@@ -4670,7 +4670,7 @@ func (api *UserAPI) CreateAPIKey(c *gin.Context) {
 		KeyHash:             hash,
 		KeyPrefix:           service.APIKeyPrefix(raw),
 		AllowedModels:       service.JoinList(input.AllowedModels),
-		AllowedUserChannels: service.JoinUintList([]uint{userChannelID}),
+		AllowedUserChannels: service.JoinOrderedUintList(userChannelIDs),
 		AllowedIPs:          service.JoinList(input.AllowedIPs),
 		QuotaLimit:          quotaLimit,
 		Enabled:             enabled,
@@ -4704,7 +4704,7 @@ func (api *UserAPI) UpdateAPIKey(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 		return
 	}
-	userChannelID, err := validateAPIKeyUserChannel(input.AllowedUserChannels)
+	userChannelIDs, err := validateAPIKeyUserChannels(input.AllowedUserChannels)
 	if err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 		return
@@ -4713,7 +4713,7 @@ func (api *UserAPI) UpdateAPIKey(c *gin.Context) {
 	updates := map[string]interface{}{
 		"name":                  strings.TrimSpace(input.Name),
 		"allowed_models":        service.JoinList(input.AllowedModels),
-		"allowed_user_channels": service.JoinUintList([]uint{userChannelID}),
+		"allowed_user_channels": service.JoinOrderedUintList(userChannelIDs),
 		"allowed_ips":           service.JoinList(input.AllowedIPs),
 	}
 	if input.QuotaLimit != nil {
@@ -5215,7 +5215,7 @@ func toAPIKeyResponse(apiKey model.APIKey) apiKeyResponse {
 		APIKey:              apiKey.APIKey,
 		KeyPrefix:           apiKey.KeyPrefix,
 		AllowedModels:       service.ParseList(apiKey.AllowedModels),
-		AllowedUserChannels: service.ParseUintList(apiKey.AllowedUserChannels),
+		AllowedUserChannels: service.ParseOrderedUintList(apiKey.AllowedUserChannels),
 		AllowedIPs:          service.ParseList(apiKey.AllowedIPs),
 		QuotaLimit:          apiKey.QuotaLimit,
 		Enabled:             apiKey.Enabled,
@@ -5247,24 +5247,43 @@ func apiKeyUsageStats(apiKeyID uint, userID uint, usageResetAt *time.Time) usage
 	return usageStats{RequestCount: summary.RequestCount, InputTokens: summary.InputTokens, OutputTokens: summary.OutputTokens, CachedInputTokens: summary.CachedInputTokens, TotalTokens: summary.TotalTokens, TotalCost: summary.TotalCost}
 }
 
-func validateAPIKeyUserChannel(userChannelIDs []uint) (uint, error) {
+const maxAPIKeyUserChannels = 10
+
+// validateAPIKeyUserChannels accepts one channel (normal binding) or several
+// channels whose order defines the automatic failover sequence.
+func validateAPIKeyUserChannels(userChannelIDs []uint) ([]uint, error) {
 	if service.PersonalModeEnabled() {
 		if len(userChannelIDs) == 0 {
-			return 0, nil
+			return nil, nil
 		}
-		return userChannelIDs[0], nil
+		return userChannelIDs[:1], nil
 	}
-	if len(userChannelIDs) != 1 || userChannelIDs[0] == 0 {
-		return 0, errors.New("API key must be bound to exactly one user channel")
-	}
-	var userChannel model.UserChannel
-	if err := model.DB.Where("id = ? AND enabled = ?", userChannelIDs[0], true).First(&userChannel).Error; err != nil {
-		if errors.Is(err, gorm.ErrRecordNotFound) {
-			return 0, errors.New("User channel not found or disabled")
+	deduped := make([]uint, 0, len(userChannelIDs))
+	seen := map[uint]struct{}{}
+	for _, id := range userChannelIDs {
+		if id == 0 {
+			continue
 		}
-		return 0, err
+		if _, exists := seen[id]; exists {
+			continue
+		}
+		seen[id] = struct{}{}
+		deduped = append(deduped, id)
 	}
-	return userChannel.ID, nil
+	if len(deduped) == 0 {
+		return nil, errors.New("API key must be bound to at least one user channel")
+	}
+	if len(deduped) > maxAPIKeyUserChannels {
+		return nil, errors.New("API key cannot be bound to more than 10 user channels")
+	}
+	var count int64
+	if err := model.DB.Model(&model.UserChannel{}).Where("id IN ? AND enabled = ?", deduped, true).Count(&count).Error; err != nil {
+		return nil, err
+	}
+	if count != int64(len(deduped)) {
+		return nil, errors.New("User channel not found or disabled")
+	}
+	return deduped, nil
 }
 
 func validateAPIKeyQuotaLimit(value *decimal.Decimal) (decimal.Decimal, error) {

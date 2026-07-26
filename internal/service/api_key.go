@@ -180,10 +180,15 @@ func APIKeyAllowsUserChannel(apiKey *model.APIKey, userChannelID *uint) bool {
 		return true
 	}
 	allowed := ParseUintList(apiKey.AllowedUserChannels)
-	if len(allowed) != 1 || userChannelID == nil {
+	if len(allowed) == 0 || userChannelID == nil {
 		return false
 	}
-	return allowed[0] == *userChannelID
+	for _, id := range allowed {
+		if id == *userChannelID {
+			return true
+		}
+	}
+	return false
 }
 
 func APIKeyQuotaExceeded(apiKey *model.APIKey, cost decimal.Decimal) (bool, error) {
@@ -278,6 +283,48 @@ func ParseUintList(raw string) []uint {
 	}
 	sort.Slice(items, func(i, j int) bool { return items[i] < items[j] })
 	return items
+}
+
+// ParseOrderedUintList parses a comma-separated uint list, deduplicating while
+// preserving the stored order. Used for API key user-channel failover lists,
+// where the position encodes the retry order.
+func ParseOrderedUintList(raw string) []uint {
+	seen := map[uint]struct{}{}
+	items := []uint{}
+	for _, item := range strings.Split(raw, ",") {
+		item = strings.TrimSpace(item)
+		if item == "" {
+			continue
+		}
+		parsed, err := strconv.ParseUint(item, 10, 0)
+		if err != nil || parsed == 0 {
+			continue
+		}
+		value := uint(parsed)
+		if _, exists := seen[value]; exists {
+			continue
+		}
+		seen[value] = struct{}{}
+		items = append(items, value)
+	}
+	return items
+}
+
+// JoinOrderedUintList serializes a uint list keeping its order, deduplicated.
+func JoinOrderedUintList(items []uint) string {
+	seen := map[uint]struct{}{}
+	out := make([]string, 0, len(items))
+	for _, item := range items {
+		if item == 0 {
+			continue
+		}
+		if _, exists := seen[item]; exists {
+			continue
+		}
+		seen[item] = struct{}{}
+		out = append(out, strconv.FormatUint(uint64(item), 10))
+	}
+	return strings.Join(out, ",")
 }
 
 func JoinList(items []string) string {
