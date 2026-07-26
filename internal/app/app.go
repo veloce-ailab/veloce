@@ -776,6 +776,7 @@ func Run() error {
 		admin.POST("/user-channels", userChannelAPI.Create)
 		admin.PUT("/user-channels/:id", userChannelAPI.Update)
 		admin.PUT("/user-channels/:id/allowed-groups", userChannelAPI.SetAllowedGroups)
+		admin.PUT("/user-channels/:id/allowed-users", userChannelAPI.SetAllowedUsers)
 		admin.DELETE("/user-channels/:id", userChannelAPI.Delete)
 
 		// Groups

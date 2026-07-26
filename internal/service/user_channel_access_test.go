@@ -16,7 +16,7 @@ func TestFilterUserChannelGroupAccess(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := database.AutoMigrate(&model.Group{}, &model.User{}, &model.UserGroupMembership{}, &model.UserChannel{}, &model.UserChannelGroupAccess{}); err != nil {
+	if err := database.AutoMigrate(&model.Group{}, &model.User{}, &model.UserGroupMembership{}, &model.UserChannel{}, &model.UserChannelGroupAccess{}, &model.UserChannelUserAccess{}); err != nil {
 		t.Fatal(err)
 	}
 	model.DB = database
@@ -37,10 +37,17 @@ func TestFilterUserChannelGroupAccess(t *testing.T) {
 		t.Fatal(err)
 	}
 
+	otherUser := model.User{Username: "other", Email: "other@example.com", APIKey: "sk-other-user-channel-access"}
+	if err := database.Create(&otherUser).Error; err != nil {
+		t.Fatal(err)
+	}
+
 	openChannel := model.UserChannel{Name: "open", Enabled: true}
 	standardChannel := model.UserChannel{Name: "standard-only", Enabled: true}
 	premiumChannel := model.UserChannel{Name: "premium-only", Enabled: true}
-	for _, channel := range []*model.UserChannel{&openChannel, &standardChannel, &premiumChannel} {
+	personalChannel := model.UserChannel{Name: "personal-only", Enabled: true}
+	strangerChannel := model.UserChannel{Name: "stranger-only", Enabled: true}
+	for _, channel := range []*model.UserChannel{&openChannel, &standardChannel, &premiumChannel, &personalChannel, &strangerChannel} {
 		if err := database.Create(channel).Error; err != nil {
 			t.Fatal(err)
 		}
@@ -49,6 +56,12 @@ func TestFilterUserChannelGroupAccess(t *testing.T) {
 		t.Fatal(err)
 	}
 	if err := database.Create(&model.UserChannelGroupAccess{UserChannelID: premiumChannel.ID, GroupID: premium.ID}).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := database.Create(&model.UserChannelUserAccess{UserChannelID: personalChannel.ID, UserID: user.ID}).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := database.Create(&model.UserChannelUserAccess{UserChannelID: strangerChannel.ID, UserID: otherUser.ID}).Error; err != nil {
 		t.Fatal(err)
 	}
 
@@ -60,7 +73,21 @@ func TestFilterUserChannelGroupAccess(t *testing.T) {
 	if err := query.Order("name ASC").Find(&channels).Error; err != nil {
 		t.Fatal(err)
 	}
-	if len(channels) != 2 || channels[0].Name != "open" || channels[1].Name != "standard-only" {
+	if len(channels) != 3 || channels[0].Name != "open" || channels[1].Name != "personal-only" || channels[2].Name != "standard-only" {
 		t.Fatalf("accessible channels = %#v", channels)
+	}
+
+	// A user with no group memberships still sees unrestricted channels plus
+	// their personally granted channels.
+	query, err = filterUserChannelGroupAccess(database.Model(&model.UserChannel{}), &otherUser)
+	if err != nil {
+		t.Fatal(err)
+	}
+	channels = nil
+	if err := query.Order("name ASC").Find(&channels).Error; err != nil {
+		t.Fatal(err)
+	}
+	if len(channels) != 2 || channels[0].Name != "open" || channels[1].Name != "stranger-only" {
+		t.Fatalf("accessible channels for other user = %#v", channels)
 	}
 }

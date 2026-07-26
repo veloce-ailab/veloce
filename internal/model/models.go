@@ -197,6 +197,7 @@ type UserChannel struct {
 	UpdatedAt        time.Time                `json:"updated_at"`
 	Channels         []Channel                `gorm:"foreignKey:UserChannelID" json:"channels,omitempty"`
 	AllowedGroups    []UserChannelGroupAccess `gorm:"foreignKey:UserChannelID" json:"allowed_groups,omitempty"`
+	AllowedUsers     []UserChannelUserAccess  `gorm:"foreignKey:UserChannelID" json:"allowed_users,omitempty"`
 }
 
 // UserChannelGroupAccess restricts a user-facing channel to members of a group.
@@ -207,6 +208,19 @@ type UserChannelGroupAccess struct {
 	UserChannel   UserChannel `gorm:"foreignKey:UserChannelID" json:"-"`
 	GroupID       uint        `gorm:"uniqueIndex:idx_user_channel_group_access;not null" json:"group_id"`
 	Group         Group       `gorm:"foreignKey:GroupID" json:"group"`
+	CreatedAt     time.Time   `json:"created_at"`
+	UpdatedAt     time.Time   `json:"updated_at"`
+}
+
+// UserChannelUserAccess restricts a user-facing channel to a specific user.
+// A channel with neither group nor user access records remains available to
+// everyone; otherwise it is visible to allowed groups and allowed users only.
+type UserChannelUserAccess struct {
+	ID            uint        `gorm:"primaryKey" json:"id"`
+	UserChannelID uint        `gorm:"uniqueIndex:idx_user_channel_user_access;not null" json:"user_channel_id"`
+	UserChannel   UserChannel `gorm:"foreignKey:UserChannelID" json:"-"`
+	UserID        uint        `gorm:"uniqueIndex:idx_user_channel_user_access;not null" json:"user_id"`
+	User          User        `gorm:"foreignKey:UserID" json:"user"`
 	CreatedAt     time.Time   `json:"created_at"`
 	UpdatedAt     time.Time   `json:"updated_at"`
 }

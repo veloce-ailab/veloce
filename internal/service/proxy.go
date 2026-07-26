@@ -1753,26 +1753,39 @@ func effectiveUserGroupMultiplier(user *model.User, channelID uint, modelConfigI
 	return selected.Mul(departmentMultiplier), nil
 }
 
-// filterUserChannelGroupAccess keeps unrestricted user channels and channels
-// explicitly granted to at least one active group of the user.
+// FilterUserChannelsForUser keeps unrestricted user channels and channels
+// explicitly granted to the user or to at least one of their active groups.
+func FilterUserChannelsForUser(query *gorm.DB, user *model.User) (*gorm.DB, error) {
+	return filterUserChannelGroupAccess(query, user)
+}
+
+// filterUserChannelGroupAccess keeps user channels without any access records
+// (unrestricted) plus channels granted to the user directly or via one of the
+// user's active groups.
 func filterUserChannelGroupAccess(query *gorm.DB, user *model.User) (*gorm.DB, error) {
 	groupIDs, err := activeUserGroupIDs(user)
 	if err != nil {
 		return nil, err
 	}
-	if len(groupIDs) == 0 {
-		return query.Where(`NOT EXISTS (
-			SELECT 1 FROM user_channel_group_accesses access
-			WHERE access.user_channel_id = user_channels.id
-		)`), nil
-	}
-	return query.Where(`NOT EXISTS (
+	const unrestricted = `(NOT EXISTS (
 		SELECT 1 FROM user_channel_group_accesses access
 		WHERE access.user_channel_id = user_channels.id
-	) OR EXISTS (
+	) AND NOT EXISTS (
+		SELECT 1 FROM user_channel_user_accesses user_access
+		WHERE user_access.user_channel_id = user_channels.id
+	))`
+	const userGranted = `EXISTS (
+		SELECT 1 FROM user_channel_user_accesses user_access
+		WHERE user_access.user_channel_id = user_channels.id AND user_access.user_id = ?
+	)`
+	const groupGranted = `EXISTS (
 		SELECT 1 FROM user_channel_group_accesses access
 		WHERE access.user_channel_id = user_channels.id AND access.group_id IN ?
-	)`, groupIDs), nil
+	)`
+	if len(groupIDs) == 0 {
+		return query.Where(unrestricted+" OR "+userGranted, user.ID), nil
+	}
+	return query.Where(unrestricted+" OR "+userGranted+" OR "+groupGranted, user.ID, groupIDs), nil
 }
 
 func activeUserGroupIDs(user *model.User) ([]uint, error) {

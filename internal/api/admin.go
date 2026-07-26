@@ -3855,7 +3855,7 @@ type userChannelCatalogItem struct {
 
 func (api *UserChannelAPI) List(c *gin.Context) {
 	var channels []model.UserChannel
-	model.DB.Preload("Channels.Models.Model").Preload("AllowedGroups.Group").Find(&channels)
+	model.DB.Preload("Channels.Models.Model").Preload("AllowedGroups.Group").Preload("AllowedUsers.User").Find(&channels)
 	c.JSON(http.StatusOK, channels)
 }
 
@@ -3949,6 +3949,52 @@ func (api *UserChannelAPI) SetAllowedGroups(c *gin.Context) {
 	c.JSON(http.StatusOK, channel.AllowedGroups)
 }
 
+func (api *UserChannelAPI) SetAllowedUsers(c *gin.Context) {
+	var channel model.UserChannel
+	if err := model.DB.First(&channel, c.Param("id")).Error; err != nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "User channel not found"})
+		return
+	}
+	var input struct {
+		UserIDs []uint `json:"user_ids"`
+	}
+	if err := c.ShouldBindJSON(&input); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+	userIDs := uniquePositiveUintIDs(input.UserIDs)
+	if len(userIDs) > 0 {
+		var count int64
+		if err := model.DB.Model(&model.User{}).Where("id IN ?", userIDs).Count(&count).Error; err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to validate users"})
+			return
+		}
+		if count != int64(len(userIDs)) {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "One or more users do not exist"})
+			return
+		}
+	}
+	if err := model.DB.Transaction(func(tx *gorm.DB) error {
+		if err := tx.Where("user_channel_id = ?", channel.ID).Delete(&model.UserChannelUserAccess{}).Error; err != nil {
+			return err
+		}
+		for _, userID := range userIDs {
+			if err := tx.Create(&model.UserChannelUserAccess{UserChannelID: channel.ID, UserID: userID}).Error; err != nil {
+				return err
+			}
+		}
+		return nil
+	}); err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to update allowed users"})
+		return
+	}
+	if err := model.DB.Preload("AllowedUsers.User").First(&channel, channel.ID).Error; err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to load allowed users"})
+		return
+	}
+	c.JSON(http.StatusOK, channel.AllowedUsers)
+}
+
 func uniquePositiveUintIDs(values []uint) []uint {
 	seen := make(map[uint]struct{}, len(values))
 	result := make([]uint, 0, len(values))
@@ -3966,12 +4012,23 @@ func uniquePositiveUintIDs(values []uint) []uint {
 }
 
 func (api *UserChannelAPI) Catalog(c *gin.Context) {
-	var channels []model.UserChannel
-	if err := model.DB.
+	query := model.DB.
 		Preload("Channels", "enabled = ?", true).
 		Preload("Channels.Models", "enabled = ?", true).
 		Preload("Channels.Models.Model", "enabled = ?", true).
-		Where("enabled = ?", true).
+		Where("enabled = ?", true)
+	// Hide channels the current user is not allowed to select, matching the
+	// access rules enforced by the proxy at request time.
+	if user, ok := currentUser(c); ok {
+		filtered, err := service.FilterUserChannelsForUser(query, user)
+		if err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to load user channel catalog"})
+			return
+		}
+		query = filtered
+	}
+	var channels []model.UserChannel
+	if err := query.
 		Order("name ASC").
 		Find(&channels).Error; err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to load user channel catalog"})
