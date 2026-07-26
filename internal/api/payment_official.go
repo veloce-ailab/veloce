@@ -445,7 +445,13 @@ func handlePayPalNotify(c *gin.Context, cfg paymentConfig) error {
 	if err := json.Unmarshal(body, &event); err != nil {
 		return err
 	}
-	if event.EventType != "PAYMENT.CAPTURE.COMPLETED" && event.EventType != "CHECKOUT.ORDER.APPROVED" {
+	// Orders are created with intent=CAPTURE, so approval alone moves no money:
+	// the buyer agreed but the funds are only taken once we call capture. Only a
+	// completed capture may credit the balance.
+	if event.EventType == "CHECKOUT.ORDER.APPROVED" {
+		return capturePayPalApprovedOrder(c, cfg, event.Resource)
+	}
+	if event.EventType != "PAYMENT.CAPTURE.COMPLETED" {
 		return nil
 	}
 	orderNo, tradeNo, amount, currency, err := paypalEventPayment(event.Resource)
@@ -459,6 +465,81 @@ func handlePayPalNotify(c *gin.Context, cfg paymentConfig) error {
 		}
 	}
 	return completeOfficialPayment(paymentProviderPayPal, cfg.ChannelID, orderNo, tradeNo, amount, currency, string(body))
+}
+
+// capturePayPalApprovedOrder captures an approved order. The capture response is
+// credited directly when PayPal reports it COMPLETED; otherwise the matching
+// PAYMENT.CAPTURE.COMPLETED webhook settles the order later.
+func capturePayPalApprovedOrder(c *gin.Context, cfg paymentConfig, resource json.RawMessage) error {
+	var approved struct {
+		ID string `json:"id"`
+	}
+	if err := json.Unmarshal(resource, &approved); err != nil {
+		return err
+	}
+	orderID := strings.TrimSpace(approved.ID)
+	if orderID == "" {
+		return errors.New("PayPal approval event has no order id")
+	}
+	accessToken, err := payPalAccessToken(c, cfg)
+	if err != nil {
+		return err
+	}
+	baseURL, err := validHTTPURL(cfg.PayPalBaseURL)
+	if err != nil {
+		return err
+	}
+	req, err := http.NewRequestWithContext(c.Request.Context(), http.MethodPost, strings.TrimRight(baseURL.String(), "/")+"/v2/checkout/orders/"+url.PathEscape(orderID)+"/capture", strings.NewReader("{}"))
+	if err != nil {
+		return err
+	}
+	req.Header.Set("Authorization", "Bearer "+accessToken)
+	req.Header.Set("Content-Type", "application/json")
+	// Replaying an approval webhook must not capture twice.
+	req.Header.Set("PayPal-Request-Id", "capture-"+orderID)
+	var captured struct {
+		ID            string `json:"id"`
+		Status        string `json:"status"`
+		PurchaseUnits []struct {
+			CustomID string `json:"custom_id"`
+			Payments struct {
+				Captures []struct {
+					ID     string `json:"id"`
+					Status string `json:"status"`
+					Amount struct {
+						Value        string `json:"value"`
+						CurrencyCode string `json:"currency_code"`
+					} `json:"amount"`
+				} `json:"captures"`
+			} `json:"payments"`
+		} `json:"purchase_units"`
+	}
+	if err := doJSON(req, &captured); err != nil {
+		return fmt.Errorf("capture PayPal order %s: %w", orderID, err)
+	}
+	payload, _ := json.Marshal(captured)
+	for _, unit := range captured.PurchaseUnits {
+		for _, capture := range unit.Payments.Captures {
+			if !strings.EqualFold(capture.Status, "COMPLETED") {
+				continue
+			}
+			amount, err := decimal.NewFromString(capture.Amount.Value)
+			if err != nil {
+				return err
+			}
+			orderNo := strings.TrimSpace(unit.CustomID)
+			if orderNo == "" {
+				var order model.PaymentOrder
+				if err := model.DB.Where("gateway_provider = ? AND gateway_trade_no = ?", paymentProviderPayPal, orderID).First(&order).Error; err != nil {
+					return err
+				}
+				orderNo = order.OrderNo
+			}
+			return completeOfficialPayment(paymentProviderPayPal, cfg.ChannelID, orderNo, orderID, amount, capture.Amount.CurrencyCode, string(payload))
+		}
+	}
+	// Not captured yet (for example PENDING for review); wait for the webhook.
+	return nil
 }
 
 func handleStripeNotify(c *gin.Context, cfg paymentConfig) error {
