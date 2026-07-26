@@ -727,23 +727,39 @@ func resetDueSubscriptions(tx *gorm.DB, userID uint, now time.Time) error {
 		return err
 	}
 	for _, subscription := range subscriptions {
-		if subscription.Plan.ID == 0 || !subscription.Plan.Enabled || subscription.Plan.ResetIntervalDays <= 0 {
-			continue
-		}
-		nextReset := subscription.NextResetAt
-		for !nextReset.After(now) {
-			nextReset = nextReset.AddDate(0, 0, subscription.Plan.ResetIntervalDays)
-		}
-		lastReset := now
-		if err := tx.Model(&subscription).Updates(map[string]interface{}{
-			"balance":       subscription.Plan.ResetAmount,
-			"next_reset_at": nextReset,
-			"last_reset_at": &lastReset,
-		}).Error; err != nil {
+		if err := resetSubscriptionIfDue(tx, subscription, now); err != nil {
 			return err
 		}
 	}
 	return nil
+}
+
+// resetSubscriptionIfDue refills a subscription that has reached its reset time.
+//
+// The row must still be due at write time. Without that condition a request
+// holding a pre-reset snapshot can overwrite balance with the plan's full reset
+// amount after another request already reset it and charged usage against the
+// fresh balance, silently erasing that spend. Resets are triggered by ordinary
+// reads such as GET /user/subscription, so the overlap is easy to hit.
+func resetSubscriptionIfDue(tx *gorm.DB, subscription UserSubscription, now time.Time) error {
+	if subscription.Plan.ID == 0 || !subscription.Plan.Enabled || subscription.Plan.ResetIntervalDays <= 0 {
+		return nil
+	}
+	nextReset := subscription.NextResetAt
+	for !nextReset.After(now) {
+		nextReset = nextReset.AddDate(0, 0, subscription.Plan.ResetIntervalDays)
+	}
+	lastReset := now
+	result := tx.Model(&UserSubscription{}).
+		Where("id = ? AND next_reset_at <= ?", subscription.ID, now).
+		Updates(map[string]interface{}{
+			"balance":       subscription.Plan.ResetAmount,
+			"next_reset_at": nextReset,
+			"last_reset_at": &lastReset,
+		})
+	// RowsAffected == 0 means another transaction already performed this reset;
+	// its balance is the current one and must be left alone.
+	return result.Error
 }
 
 func activeSubscriptions(tx *gorm.DB, userID uint, now time.Time) *gorm.DB {
