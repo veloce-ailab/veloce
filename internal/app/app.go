@@ -691,6 +691,46 @@ func Run() error {
 			})
 			c.Redirect(http.StatusFound, frontendTokenRedirectURL(returnTo, token))
 		})
+		auth.POST("/desktop/token",
+			middleware.NewSensitiveRateLimiter(middleware.SensitiveRateLimitConfig{Name: "desktop-token-ip", Limit: 20, Window: time.Minute}),
+			func(c *gin.Context) {
+				var input struct {
+					Code         string `json:"code"`
+					CodeVerifier string `json:"code_verifier"`
+				}
+				if err := c.ShouldBindJSON(&input); err != nil {
+					c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+					return
+				}
+				user, token, err := authService.ExchangeDesktopAuthCode(input.Code, input.CodeVerifier)
+				if err != nil {
+					service.RecordAuditLog(service.AuditLogInput{
+						LogType:    service.AuditLogTypeLogin,
+						Action:     "desktop_login_failed",
+						Resource:   "desktop_token",
+						Method:     c.Request.Method,
+						Path:       c.Request.URL.Path,
+						StatusCode: http.StatusUnauthorized,
+						IPAddress:  c.ClientIP(),
+						UserAgent:  c.Request.UserAgent(),
+						Message:    err.Error(),
+					})
+					c.JSON(http.StatusUnauthorized, gin.H{"error": err.Error()})
+					return
+				}
+				service.RecordAuditLog(service.AuditLogInput{
+					LogType:    service.AuditLogTypeLogin,
+					Action:     "desktop_login_success",
+					Resource:   "desktop_token",
+					UserID:     uintPtr(user.ID),
+					Method:     c.Request.Method,
+					Path:       c.Request.URL.Path,
+					StatusCode: http.StatusOK,
+					IPAddress:  c.ClientIP(),
+					UserAgent:  c.Request.UserAgent(),
+				})
+				c.JSON(http.StatusOK, gin.H{"token": token, "user": user})
+			})
 	}
 
 	// AI Gateway routes (Proxy)
@@ -894,6 +934,44 @@ func Run() error {
 			setOIDCStateCookie(c, state, 600)
 			c.JSON(http.StatusOK, gin.H{"auth_url": authURL})
 		})
+		userGroup.POST("/desktop/authorize",
+			middleware.NewSensitiveRateLimiter(middleware.SensitiveRateLimitConfig{Name: "desktop-authorize-ip", Limit: 20, Window: time.Minute}),
+			func(c *gin.Context) {
+				val, exists := c.Get("user")
+				if !exists {
+					c.JSON(http.StatusUnauthorized, gin.H{"error": "Unauthorized"})
+					return
+				}
+				user, ok := val.(*model.User)
+				if !ok || user == nil {
+					c.JSON(http.StatusUnauthorized, gin.H{"error": "Unauthorized"})
+					return
+				}
+				var input struct {
+					CodeChallenge string `json:"code_challenge"`
+				}
+				if err := c.ShouldBindJSON(&input); err != nil {
+					c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+					return
+				}
+				code, err := authService.CreateDesktopAuthCode(user.ID, input.CodeChallenge)
+				if err != nil {
+					c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+					return
+				}
+				service.RecordAuditLog(service.AuditLogInput{
+					LogType:    service.AuditLogTypeLogin,
+					Action:     "desktop_authorize_success",
+					Resource:   "desktop_authorize",
+					UserID:     uintPtr(user.ID),
+					Method:     c.Request.Method,
+					Path:       c.Request.URL.Path,
+					StatusCode: http.StatusOK,
+					IPAddress:  c.ClientIP(),
+					UserAgent:  c.Request.UserAgent(),
+				})
+				c.JSON(http.StatusOK, gin.H{"code": code, "expires_in": 300})
+			})
 		userGroup.GET("/api-keys", userAPI.ListAPIKeys)
 		userGroup.POST("/api-keys", userAPI.CreateAPIKey)
 		userGroup.PUT("/api-keys/:id", userAPI.UpdateAPIKey)
