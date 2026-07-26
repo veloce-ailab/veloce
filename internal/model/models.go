@@ -528,6 +528,10 @@ type TokenLog struct {
 	CacheWrite1hInputPrice  decimal.Decimal `gorm:"type:decimal(20,10);default:0" json:"cache_write_1h_input_price"`
 	PricingFormula          string          `gorm:"type:text" json:"pricing_formula"`
 	Cost                    decimal.Decimal `gorm:"type:decimal(20,10)" json:"cost"`
+	// Status 为 0 表示成功（历史行兼容）；上级调用失败时记录返回给用户的 HTTP 状态码，
+	// 该行不计费但仍写入明细，让用户能看到失败的请求。
+	Status                  int             `gorm:"default:0" json:"status"`
+	ErrorMessage            string          `gorm:"size:500" json:"error_message,omitempty"`
 	IP                      string          `gorm:"size:45" json:"ip"`
 	UserAgent               string          `json:"user_agent"`
 	CreatedAt               time.Time       `json:"created_at"`

@@ -674,7 +674,7 @@ func Run() error {
 	}
 
 	gateway := r.Group("/v1")
-	gateway.Use(middleware.ExternalAPIMiddleware(), middleware.AuthMiddleware(authService), rateLimiter.Middleware())
+	gateway.Use(middleware.ExternalAPIMiddleware(), middleware.AuthMiddleware(authService), rateLimiter.Middleware(), service.UpstreamFailureLogMiddleware())
 	{
 		gateway.GET("/models", proxyService.ListModels)
 		gateway.GET("/balance", proxyService.HandleTokenBalance)
@@ -714,7 +714,7 @@ func Run() error {
 	}
 
 	geminiGateway := r.Group("/v1beta")
-	geminiGateway.Use(middleware.ExternalAPIMiddleware(), middleware.AuthMiddleware(authService), rateLimiter.Middleware())
+	geminiGateway.Use(middleware.ExternalAPIMiddleware(), middleware.AuthMiddleware(authService), rateLimiter.Middleware(), service.UpstreamFailureLogMiddleware())
 	{
 		geminiGateway.POST("/models/:modelAction", proxyService.HandleGeminiGenerateContent)
 	}

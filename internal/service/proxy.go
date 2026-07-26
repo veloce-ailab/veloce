@@ -1153,13 +1153,17 @@ func (s *ProxyService) resolveTarget(c *gin.Context, modelName string) (*proxyTa
 		return nil, false
 	}
 
-	return &proxyTarget{
+	target := &proxyTarget{
 		User:        user,
 		APIKey:      apiKey,
 		ModelName:   modelName,
 		ModelConfig: modelConfig,
 		Channel:     channel,
-	}, true
+	}
+	// 暂存已解析的目标：若之后上级调用失败（未计费），
+	// UpstreamFailureLogMiddleware 会用它补记一条零费用的失败明细
+	stashUpstreamFailureTarget(c, target)
+	return target, true
 }
 
 func (target *proxyTarget) upstreamModelName() string {
@@ -1388,6 +1392,7 @@ func (s *ProxyService) billUsageAndReturnCost(c *gin.Context, user *model.User, 
 	if err := model.RecordTokenLog(tokenLog); err != nil {
 		log.Printf("failed to record token log: %v", err)
 	}
+	markTokenLogRecorded(c)
 
 	return cost, 0, "", nil
 }
@@ -1395,7 +1400,109 @@ func (s *ProxyService) billUsageAndReturnCost(c *gin.Context, user *model.User, 
 const (
 	tokenLogStartKey         = "token_log_started_at"
 	tokenLogFirstResponseKey = "token_log_first_response_at"
+	tokenLogRecordedKey      = "token_log_recorded"
+	upstreamFailureTargetKey = "upstream_failure_log_target"
+	failureLogBodyLimit      = 512
 )
+
+// stashUpstreamFailureTarget 记录本次请求解析到的代理目标，供失败明细兜底使用
+func stashUpstreamFailureTarget(c *gin.Context, target *proxyTarget) {
+	if c != nil && target != nil {
+		c.Set(upstreamFailureTargetKey, target)
+	}
+}
+
+// markTokenLogRecorded 标记本次请求已写入计费明细，失败兜底不再重复记录
+func markTokenLogRecorded(c *gin.Context) {
+	if c != nil {
+		c.Set(tokenLogRecordedKey, true)
+	}
+}
+
+// errorBodyCaptureWriter 仅在错误状态码时捕获响应体前 512 字节，
+// 用于把错误信息写进失败明细；正常响应（含流式）原样透传不缓存。
+type errorBodyCaptureWriter struct {
+	gin.ResponseWriter
+	buffer bytes.Buffer
+}
+
+func (w *errorBodyCaptureWriter) Write(data []byte) (int, error) {
+	if w.Status() >= http.StatusBadRequest && w.buffer.Len() < failureLogBodyLimit {
+		remaining := failureLogBodyLimit - w.buffer.Len()
+		if remaining > len(data) {
+			remaining = len(data)
+		}
+		w.buffer.Write(data[:remaining])
+	}
+	return w.ResponseWriter.Write(data)
+}
+
+func (w *errorBodyCaptureWriter) WriteString(s string) (int, error) {
+	return w.Write([]byte(s))
+}
+
+// UpstreamFailureLogMiddleware 网关请求结束后检查：若已解析到目标模型/渠道、
+// 未产生计费明细且返回了错误状态码（多为上级调用失败），则补记一条零费用的
+// 失败明细——即便没有计费，用户也能在明细页看到失败的请求。
+func UpstreamFailureLogMiddleware() gin.HandlerFunc {
+	return func(c *gin.Context) {
+		beginTokenLogTiming(c)
+		capture := &errorBodyCaptureWriter{ResponseWriter: c.Writer}
+		c.Writer = capture
+		c.Next()
+
+		status := capture.Status()
+		if status < http.StatusBadRequest || c.GetBool(tokenLogRecordedKey) {
+			return
+		}
+		raw, ok := c.Get(upstreamFailureTargetKey)
+		if !ok {
+			return
+		}
+		target, ok := raw.(*proxyTarget)
+		if !ok || target == nil || target.User == nil {
+			return
+		}
+		one := decimal.NewFromInt(1)
+		entry := newUsageTokenLog(c, target.User, target.APIKey, &target.Channel, &target.ModelConfig, target.billingModelName(), usageTokenCounts{}, target.billingModel(), decimal.Zero, one, one, decimal.Zero)
+		entry.Status = status
+		entry.ErrorMessage = failureMessageFromBody(capture.buffer.Bytes())
+		entry.PricingFormula = ""
+		if err := model.RecordTokenLog(entry); err != nil {
+			log.Printf("failed to record failed-request token log: %v", err)
+		}
+	}
+}
+
+// failureMessageFromBody 从错误响应体里提取给用户看的错误信息
+func failureMessageFromBody(body []byte) string {
+	var payload struct {
+		Error interface{} `json:"error"`
+	}
+	if err := json.Unmarshal(body, &payload); err == nil {
+		switch typed := payload.Error.(type) {
+		case string:
+			if message := strings.TrimSpace(typed); message != "" {
+				return truncateFailureMessage(message)
+			}
+		case map[string]interface{}:
+			if message, ok := typed["message"].(string); ok && strings.TrimSpace(message) != "" {
+				return truncateFailureMessage(strings.TrimSpace(message))
+			}
+		}
+	}
+	if message := strings.Join(strings.Fields(strings.TrimSpace(string(body))), " "); message != "" {
+		return truncateFailureMessage(message)
+	}
+	return "Upstream request failed"
+}
+
+func truncateFailureMessage(message string) string {
+	if len(message) > failureLogBodyLimit {
+		return message[:failureLogBodyLimit]
+	}
+	return message
+}
 
 func beginTokenLogTiming(c *gin.Context) {
 	if c == nil {
