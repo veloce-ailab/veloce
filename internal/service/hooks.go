@@ -73,6 +73,9 @@ type AdvancedChatRuntimeContext struct {
 	AgentGroupID string
 	SessionID    string
 	RunID        string
+	// DisabledToolGroups lists per-session feature groups the user turned off;
+	// extension hooks should skip their tools and prompts when their group is listed.
+	DisabledToolGroups []string
 }
 
 type AdvancedChatRuntimeExtension struct {
@@ -316,6 +319,23 @@ func ApplyUsageCharge(tx *gorm.DB, userID uint, cost decimal.Decimal) error {
 	}
 	if balanceUpdate.RowsAffected == 0 {
 		return ErrInsufficientBalance
+	}
+	return nil
+}
+
+// ApplyDeliveredUsageCharge charges usage for a response that has already been
+// sent to the client. Refusing the charge is not an option at that point, so a
+// shortfall drains whatever balance is left instead of leaving it untouched:
+// otherwise a user with a fraction of a cent passes the "balance > 0" precheck,
+// receives the full response, fails the charge, and can repeat that forever.
+func ApplyDeliveredUsageCharge(tx *gorm.DB, userID uint, cost decimal.Decimal) error {
+	err := ApplyUsageCharge(tx, userID, cost)
+	if !errors.Is(err, ErrInsufficientBalance) {
+		return err
+	}
+	drain := tx.Exec("UPDATE users SET balance = 0 WHERE id = ? AND balance > 0", userID)
+	if drain.Error != nil {
+		return drain.Error
 	}
 	return nil
 }

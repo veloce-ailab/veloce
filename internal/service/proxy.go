@@ -1054,10 +1054,12 @@ func (s *ProxyService) handleConvertedProviderRequest(c *gin.Context, clientProt
 			c.JSON(http.StatusBadRequest, gin.H{"error": "Streaming is not supported when converting upstream protocol", "type": "unsupported_stream"})
 			return
 		}
-		respBody, err := streamUpstreamResponse(c, resp)
-		if err != nil {
-			log.Printf("failed to stream upstream response: %v", err)
-			return
+		respBody, streamErr := streamUpstreamResponse(c, resp)
+		if streamErr != nil {
+			// The upstream already produced (and charged us for) these tokens, so
+			// a client disconnect or a truncated stream must still be billed for
+			// what was streamed rather than returning early for free.
+			log.Printf("failed to stream upstream response: %v", streamErr)
 		}
 		usage, ok := parseUsageTokensFromStream(respBody)
 		if !ok {
@@ -1066,7 +1068,7 @@ func (s *ProxyService) handleConvertedProviderRequest(c *gin.Context, clientProt
 				OutputTokens: CountTokens(target.ModelName, string(respBody)),
 			}
 		}
-		if _, _, err := s.billUsage(c, target.User, target.APIKey, &target.Channel, &target.ModelConfig, target.billingModelName(), usage, target.billingModel()); err != nil {
+		if _, _, err := s.billDeliveredUsage(c, target.User, target.APIKey, &target.Channel, &target.ModelConfig, target.billingModelName(), usage, target.billingModel()); err != nil {
 			log.Printf("failed to bill streaming usage for user=%d model=%s: %v", target.User.ID, target.ModelName, err)
 		}
 		return
@@ -1329,11 +1331,23 @@ func (s *ProxyService) handleNonStreamingResponse(c *gin.Context, resp *http.Res
 }
 
 func (s *ProxyService) billUsage(c *gin.Context, user *model.User, apiKey *model.APIKey, channel *model.Channel, modelConfig *model.ModelConfig, modelName string, usage usageTokenCounts, billingModel model.Model) (int, string, error) {
-	_, status, message, err := s.billUsageAndReturnCost(c, user, apiKey, channel, modelConfig, modelName, usage, billingModel)
+	_, status, message, err := s.settleUsage(c, user, apiKey, channel, modelConfig, modelName, usage, billingModel, false)
+	return status, message, err
+}
+
+// billDeliveredUsage bills usage whose response already reached the client, so
+// an insufficient balance settles against whatever is left instead of being
+// rejected. Callers that can still answer with 402 must use billUsage.
+func (s *ProxyService) billDeliveredUsage(c *gin.Context, user *model.User, apiKey *model.APIKey, channel *model.Channel, modelConfig *model.ModelConfig, modelName string, usage usageTokenCounts, billingModel model.Model) (int, string, error) {
+	_, status, message, err := s.settleUsage(c, user, apiKey, channel, modelConfig, modelName, usage, billingModel, true)
 	return status, message, err
 }
 
 func (s *ProxyService) billUsageAndReturnCost(c *gin.Context, user *model.User, apiKey *model.APIKey, channel *model.Channel, modelConfig *model.ModelConfig, modelName string, usage usageTokenCounts, billingModel model.Model) (decimal.Decimal, int, string, error) {
+	return s.settleUsage(c, user, apiKey, channel, modelConfig, modelName, usage, billingModel, false)
+}
+
+func (s *ProxyService) settleUsage(c *gin.Context, user *model.User, apiKey *model.APIKey, channel *model.Channel, modelConfig *model.ModelConfig, modelName string, usage usageTokenCounts, billingModel model.Model, responseDelivered bool) (decimal.Decimal, int, string, error) {
 	groupMultiplier, err := effectiveUserGroupMultiplier(user, channel.ID, modelConfig.ID)
 	if err != nil {
 		return decimal.Zero, http.StatusInternalServerError, "User group not found", err
@@ -1363,7 +1377,11 @@ func (s *ProxyService) billUsageAndReturnCost(c *gin.Context, user *model.User, 
 		return decimal.Zero, http.StatusPaymentRequired, "API key quota exceeded", ErrAPIKeyQuotaExceeded
 	}
 
-	if err := ApplyUsageCharge(tx, user.ID, cost); err != nil {
+	applyCharge := ApplyUsageCharge
+	if responseDelivered {
+		applyCharge = ApplyDeliveredUsageCharge
+	}
+	if err := applyCharge(tx, user.ID, cost); err != nil {
 		tx.Rollback()
 		cache.InvalidateUserBillingBalance(billingContext, user.ID)
 		if errors.Is(err, ErrInsufficientBalance) {
