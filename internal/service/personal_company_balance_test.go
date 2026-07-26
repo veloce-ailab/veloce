@@ -14,7 +14,7 @@ func TestStudioOperationChargeAndBalanceFloor(t *testing.T) {
 	if err != nil {
 		t.Fatalf("open database: %v", err)
 	}
-	if err := db.AutoMigrate(&model.SystemSetting{}, &model.User{}, &model.PersonalCompany{}, &model.CompanyOutboxEvent{}, &model.CompanyAuditEvent{}); err != nil {
+	if err := db.AutoMigrate(&model.SystemSetting{}, &model.User{}, &model.PersonalCompany{}, &model.CompanyOutboxEvent{}, &model.CompanyAuditEvent{}, &SubscriptionPlan{}, &UserSubscription{}); err != nil {
 		t.Fatalf("migrate: %v", err)
 	}
 	if err := model.SetSystemSettingWithDB(db, "system_mode", SystemModePersonal); err != nil {

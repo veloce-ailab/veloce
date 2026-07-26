@@ -16,7 +16,7 @@ func newDeliveredChargeDB(t *testing.T, dsn string) *gorm.DB {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := database.AutoMigrate(&model.User{}, &model.SystemSetting{}); err != nil {
+	if err := database.AutoMigrate(&model.User{}, &model.SystemSetting{}, &SubscriptionPlan{}, &UserSubscription{}); err != nil {
 		t.Fatal(err)
 	}
 	previousDB := model.DB

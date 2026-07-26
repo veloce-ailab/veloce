@@ -39,22 +39,33 @@ func Register() {
 		Enabled:                      ssrfProtectionEnabled,
 	})
 	communitymiddleware.RegisterRateLimiterFactory(newRateLimiterMiddleware)
-	communityservice.RegisterStartupHook(initSubscriptionFeatures)
+	communityservice.RegisterStartupHook(communityservice.InitSubscriptionFeatures)
 	communityservice.RegisterStartupHook(initMetaModelFeatures)
 	communityservice.RegisterStartupHook(initMemoryFeatures)
 	communityservice.RegisterStartupHook(communityservice.InitAdvancedChatFeatures)
-	communityservice.RegisterAdminRouteHook(registerSubscriptionAdminRoutes)
+	communityservice.RegisterAdminRouteHook(communityservice.RegisterSubscriptionAdminRoutes)
 	communityservice.RegisterAdminRouteHook(registerMetaModelAdminRoutes)
 	communityservice.RegisterAdminRouteHook(communityservice.RegisterAdvancedChatAdminRoutes)
 	communityservice.RegisterPublicAPIRouteHook(communityservice.RegisterAdvancedChatPublicRoutes)
-	communityservice.RegisterUserRouteHook(registerSubscriptionUserRoutes)
+	communityservice.RegisterUserRouteHook(communityservice.RegisterSubscriptionUserRoutes)
 	communityservice.RegisterUserRouteHook(communityservice.RegisterAdvancedChatUserRoutes)
 	communityservice.RegisterUserRouteHook(registerMemoryUserRoutes)
-	communityservice.RegisterUsageChargeHook(applySubscriptionUsageCharge)
 	communityservice.RegisterMetaModelHooks(listMetaModelNames, resolveMetaModel)
 	communityservice.RegisterMetaModelCatalogHook(listMetaModelCatalog)
 	communityservice.RegisterGeneratedAssetHook(communityservice.ApplyAdvancedChatGeneratedAssetHook)
 	registerMemoryHooks()
+}
+
+// currentPremiumUser resolves the authenticated user for the handlers still
+// living in this package. It disappears together with the package once memory
+// and meta-model move into internal/service.
+func currentPremiumUser(c *gin.Context) (*model.User, bool) {
+	value, exists := c.Get("user")
+	if !exists {
+		return nil, false
+	}
+	user, ok := value.(*model.User)
+	return user, ok && user != nil
 }
 
 func sensitiveFilterEnabled() bool {

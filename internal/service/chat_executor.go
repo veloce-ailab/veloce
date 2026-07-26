@@ -340,17 +340,10 @@ func applyChatExecutorUsageCharge(tx *gorm.DB, userID uint, cost decimal.Decimal
 	if cost.LessThanOrEqual(decimal.Zero) {
 		return nil
 	}
-	if usageChargeHook != nil {
-		return usageChargeHook(tx, userID, cost)
-	}
-	result := tx.Exec("UPDATE users SET balance = balance - ? WHERE id = ? AND balance >= ?", cost, userID, cost)
-	if result.Error != nil {
-		return result.Error
-	}
-	if result.RowsAffected == 0 {
-		return ErrInsufficientBalance
-	}
-	return nil
+	// chargeBalance forces settlement even in personal mode, so this bypasses
+	// ApplyUsageCharge's personal-mode exemption but keeps the same order:
+	// subscription quota first, wallet balance as the fallback.
+	return applySubscriptionUsageCharge(tx, userID, cost)
 }
 
 func clientIPForLog(c *gin.Context) string {

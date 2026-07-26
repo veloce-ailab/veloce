@@ -17,7 +17,6 @@ var ErrInsufficientBalance = errors.New("insufficient balance")
 
 type StartupHook func() error
 type RouteHook func(*gin.RouterGroup)
-type UsageChargeHook func(tx *gorm.DB, userID uint, cost decimal.Decimal) error
 type MetaModelListHook func(*gin.Context) ([]string, error)
 type MetaModelResolveHook func(*gin.Context, MetaModelResolveInput) (MetaModelResolveResult, error)
 type MetaModelCatalogHook func(*gin.Context) ([]MetaModelCatalogItem, error)
@@ -98,7 +97,6 @@ var startupHooks []StartupHook
 var publicAPIRouteHooks []RouteHook
 var adminRouteHooks []RouteHook
 var userRouteHooks []RouteHook
-var usageChargeHook UsageChargeHook
 var metaModelListHook MetaModelListHook
 var metaModelResolveHook MetaModelResolveHook
 var metaModelCatalogHook MetaModelCatalogHook
@@ -158,10 +156,6 @@ func ApplyUserRouteHooks(group *gin.RouterGroup) {
 			hook(group)
 		}
 	}
-}
-
-func RegisterUsageChargeHook(hook UsageChargeHook) {
-	usageChargeHook = hook
 }
 
 func RegisterMetaModelHooks(listHook MetaModelListHook, resolveHook MetaModelResolveHook) {
@@ -310,17 +304,9 @@ func ApplyUsageCharge(tx *gorm.DB, userID uint, cost decimal.Decimal) error {
 	if PersonalModeEnabledInTx(tx) {
 		return nil
 	}
-	if usageChargeHook != nil {
-		return usageChargeHook(tx, userID, cost)
-	}
-	balanceUpdate := tx.Exec("UPDATE users SET balance = balance - ? WHERE id = ? AND balance >= ?", cost, userID, cost)
-	if balanceUpdate.Error != nil {
-		return balanceUpdate.Error
-	}
-	if balanceUpdate.RowsAffected == 0 {
-		return ErrInsufficientBalance
-	}
-	return nil
+	// Subscription quota is spent before the wallet; applySubscriptionUsageCharge
+	// falls back to the wallet balance itself when the quota cannot cover it.
+	return applySubscriptionUsageCharge(tx, userID, cost)
 }
 
 // ApplyDeliveredUsageCharge charges usage for a response that has already been
