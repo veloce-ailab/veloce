@@ -2119,7 +2119,9 @@ func (api *EnterpriseAPI) CreateQuotaAccount(c *gin.Context) {
 	}
 	if initialLimit != "" {
 		if err := model.DB.Transaction(func(tx *gorm.DB) error {
-			if err := tx.Model(&account).Update("limit_amount", account.LimitAmount.Add(amount)).Error; err != nil {
+			if err := tx.Model(&model.QuotaAccount{}).
+				Where("id = ?", account.ID).
+				UpdateColumn("limit_amount", gorm.Expr("limit_amount + ?", amount)).Error; err != nil {
 				return err
 			}
 			return tx.Create(&model.QuotaLedger{OrganizationID: tenant.Organization.ID, AccountID: account.ID, EntryType: model.QuotaLedgerAllocation, Amount: amount, ReferenceType: "initial_quota", CreatedByUserID: user.ID}).Error
@@ -2203,17 +2205,21 @@ func (api *EnterpriseAPI) FundPoolFromPersonalBalance(c *gin.Context) {
 		if err := tx.Where("organization_id = ? AND pool_id = ?", tenant.Organization.ID, pool.ID).First(&account).Error; err != nil {
 			return err
 		}
-		var actor model.User
-		if err := tx.First(&actor, user.ID).Error; err != nil {
-			return err
+		// Debit conditionally: reading the balance and then writing an absolute
+		// value lets two concurrent transfers both pass the check, deduct the
+		// personal balance once and credit the pool twice.
+		debit := tx.Model(&model.User{}).
+			Where("id = ? AND balance >= ?", user.ID, amount).
+			UpdateColumn("balance", gorm.Expr("balance - ?", amount))
+		if debit.Error != nil {
+			return debit.Error
 		}
-		if actor.Balance.LessThan(amount) {
+		if debit.RowsAffected == 0 {
 			return errors.New("Insufficient personal balance")
 		}
-		if err := tx.Model(&actor).Update("balance", actor.Balance.Sub(amount)).Error; err != nil {
-			return err
-		}
-		if err := tx.Model(&account).Update("limit_amount", account.LimitAmount.Add(amount)).Error; err != nil {
+		if err := tx.Model(&model.QuotaAccount{}).
+			Where("id = ?", account.ID).
+			UpdateColumn("limit_amount", gorm.Expr("limit_amount + ?", amount)).Error; err != nil {
 			return err
 		}
 		return tx.Create(&model.QuotaLedger{OrganizationID: tenant.Organization.ID, AccountID: account.ID, PoolID: &pool.ID, EntryType: model.QuotaLedgerAllocation, Amount: amount, ReferenceType: "personal_balance_to_pool", CreatedByUserID: user.ID}).Error
@@ -2309,18 +2315,25 @@ func (api *EnterpriseAPI) GrantOrganizationBudgetToUser(c *gin.Context) {
 		if err != nil {
 			return err
 		}
-		available := org.LimitAmount.Sub(org.ReservedAmount).Sub(org.ConsumedAmount)
-		if amount.GreaterThan(available) {
-			return service.ErrEnterpriseQuotaExceeded
-		}
 		var employee model.User
 		if err := tx.First(&employee, input.UserID).Error; err != nil {
 			return err
 		}
-		if err := tx.Model(&org).Update("limit_amount", org.LimitAmount.Sub(amount)).Error; err != nil {
-			return err
+		// Enforce the organization's remaining budget inside the UPDATE so that
+		// concurrent grants cannot each read the same available amount and hand
+		// out the budget more than once.
+		debit := tx.Model(&model.QuotaAccount{}).
+			Where("id = ? AND limit_amount >= reserved_amount + consumed_amount + ?", org.ID, amount).
+			UpdateColumn("limit_amount", gorm.Expr("limit_amount - ?", amount))
+		if debit.Error != nil {
+			return debit.Error
 		}
-		if err := tx.Model(&employee).Update("balance", employee.Balance.Add(amount)).Error; err != nil {
+		if debit.RowsAffected == 0 {
+			return service.ErrEnterpriseQuotaExceeded
+		}
+		if err := tx.Model(&model.User{}).
+			Where("id = ?", employee.ID).
+			UpdateColumn("balance", gorm.Expr("balance + ?", amount)).Error; err != nil {
 			return err
 		}
 		return tx.Create(&model.QuotaLedger{OrganizationID: tenant.Organization.ID, AccountID: org.ID, EntryType: model.QuotaLedgerAllocation, Amount: amount.Neg(), ReferenceType: "organization_budget_to_user", ReferenceID: strconv.FormatUint(uint64(employee.ID), 10), CreatedByUserID: user.ID}).Error

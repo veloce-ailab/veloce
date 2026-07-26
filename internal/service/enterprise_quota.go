@@ -113,14 +113,26 @@ func AllocateEnterpriseQuota(db *gorm.DB, parentID, childID, actorID uint, amoun
 		if parent.OrganizationID != child.OrganizationID {
 			return ErrInvalidQuotaScope
 		}
-		available := parent.LimitAmount.Sub(parent.ReservedAmount).Sub(parent.ConsumedAmount)
-		if amount.GreaterThan(available) {
+		// The guard belongs in the UPDATE itself: checking a value read earlier
+		// and then writing an absolute amount lets two concurrent transfers both
+		// pass the check and the later write erase the earlier one, so the child
+		// can be credited twice while the parent is debited once.
+		// The comparison keeps a bare column on the left: SQLite applies numeric
+		// affinity from the column to the bound value, while an arithmetic
+		// expression on the left has no affinity and would compare numerically
+		// against text, which is never true.
+		debit := tx.Model(&model.QuotaAccount{}).
+			Where("id = ? AND limit_amount >= reserved_amount + consumed_amount + ?", parent.ID, amount).
+			UpdateColumn("limit_amount", gorm.Expr("limit_amount - ?", amount))
+		if debit.Error != nil {
+			return debit.Error
+		}
+		if debit.RowsAffected == 0 {
 			return ErrEnterpriseQuotaExceeded
 		}
-		if err := tx.Model(&parent).Update("limit_amount", parent.LimitAmount.Sub(amount)).Error; err != nil {
-			return err
-		}
-		if err := tx.Model(&child).Update("limit_amount", child.LimitAmount.Add(amount)).Error; err != nil {
+		if err := tx.Model(&model.QuotaAccount{}).
+			Where("id = ?", child.ID).
+			UpdateColumn("limit_amount", gorm.Expr("limit_amount + ?", amount)).Error; err != nil {
 			return err
 		}
 		return tx.Create([]model.QuotaLedger{
@@ -143,11 +155,20 @@ func ConsumeEnterpriseTaskQuota(db *gorm.DB, accountID, taskID, actorID uint, am
 		if err := tx.First(&account, accountID).Error; err != nil {
 			return err
 		}
-		if account.TaskID == nil || *account.TaskID != taskID || account.ReservedAmount.LessThan(amount) {
+		if account.TaskID == nil || *account.TaskID != taskID {
 			return ErrEnterpriseQuotaExceeded
 		}
-		if err := tx.Model(&account).Updates(map[string]interface{}{"reserved_amount": account.ReservedAmount.Sub(amount), "consumed_amount": account.ConsumedAmount.Add(amount)}).Error; err != nil {
-			return err
+		consume := tx.Model(&model.QuotaAccount{}).
+			Where("id = ? AND task_id = ? AND reserved_amount >= ?", account.ID, taskID, amount).
+			UpdateColumns(map[string]interface{}{
+				"reserved_amount": gorm.Expr("reserved_amount - ?", amount),
+				"consumed_amount": gorm.Expr("consumed_amount + ?", amount),
+			})
+		if consume.Error != nil {
+			return consume.Error
+		}
+		if consume.RowsAffected == 0 {
+			return ErrEnterpriseQuotaExceeded
 		}
 		return tx.Create(&model.QuotaLedger{OrganizationID: account.OrganizationID, AccountID: account.ID, TaskID: &taskID, EntryType: model.QuotaLedgerConsumption, Amount: amount, ReferenceType: "quota_consumption", ReferenceID: referenceID, CreatedByUserID: actorID}).Error
 	})
@@ -170,11 +191,20 @@ func ConsumeEnterprisePoolQuota(db *gorm.DB, accountID, poolID, actorID uint, am
 		if err := tx.First(&account, accountID).Error; err != nil {
 			return err
 		}
-		if account.PoolID == nil || *account.PoolID != poolID || account.ReservedAmount.LessThan(amount) {
+		if account.PoolID == nil || *account.PoolID != poolID {
 			return ErrEnterpriseQuotaExceeded
 		}
-		if err := tx.Model(&account).Updates(map[string]interface{}{"reserved_amount": account.ReservedAmount.Sub(amount), "consumed_amount": account.ConsumedAmount.Add(amount)}).Error; err != nil {
-			return err
+		consume := tx.Model(&model.QuotaAccount{}).
+			Where("id = ? AND pool_id = ? AND reserved_amount >= ?", account.ID, poolID, amount).
+			UpdateColumns(map[string]interface{}{
+				"reserved_amount": gorm.Expr("reserved_amount - ?", amount),
+				"consumed_amount": gorm.Expr("consumed_amount + ?", amount),
+			})
+		if consume.Error != nil {
+			return consume.Error
+		}
+		if consume.RowsAffected == 0 {
+			return ErrEnterpriseQuotaExceeded
 		}
 		return tx.Create(&model.QuotaLedger{OrganizationID: account.OrganizationID, AccountID: account.ID, PoolID: &poolID, EntryType: model.QuotaLedgerConsumption, Amount: amount, ReferenceType: "pool_quota_consumption", ReferenceID: referenceID, CreatedByUserID: actorID}).Error
 	})
@@ -192,12 +222,14 @@ func enterprisePoolQuotaAdjust(db *gorm.DB, accountID, poolID, actorID uint, amo
 		if account.PoolID == nil || *account.PoolID != poolID {
 			return ErrInvalidQuotaScope
 		}
-		available := account.LimitAmount.Sub(account.ReservedAmount).Sub(account.ConsumedAmount)
-		if amount.GreaterThan(available) {
-			return ErrEnterpriseQuotaExceeded
+		reserve := tx.Model(&model.QuotaAccount{}).
+			Where("id = ? AND pool_id = ? AND limit_amount >= reserved_amount + consumed_amount + ?", account.ID, poolID, amount).
+			UpdateColumn("reserved_amount", gorm.Expr("reserved_amount + ?", amount))
+		if reserve.Error != nil {
+			return reserve.Error
 		}
-		if err := tx.Model(&account).Update("reserved_amount", account.ReservedAmount.Add(amount)).Error; err != nil {
-			return err
+		if reserve.RowsAffected == 0 {
+			return ErrEnterpriseQuotaExceeded
 		}
 		return tx.Create(&model.QuotaLedger{OrganizationID: account.OrganizationID, AccountID: account.ID, PoolID: &poolID, EntryType: entryType, Amount: amount, ReferenceType: "pool_quota", ReferenceID: referenceID, CreatedByUserID: actorID}).Error
 	})
@@ -216,19 +248,27 @@ func enterpriseQuotaAdjust(db *gorm.DB, accountID, taskID, actorID uint, amount 
 			return ErrInvalidQuotaScope
 		}
 		if entryType == model.QuotaLedgerReservation {
-			available := account.LimitAmount.Sub(account.ReservedAmount).Sub(account.ConsumedAmount)
-			if amount.GreaterThan(available) {
+			reserve := tx.Model(&model.QuotaAccount{}).
+				Where("id = ? AND task_id = ? AND limit_amount >= reserved_amount + consumed_amount + ?", account.ID, taskID, amount).
+				UpdateColumn("reserved_amount", gorm.Expr("reserved_amount + ?", amount))
+			if reserve.Error != nil {
+				return reserve.Error
+			}
+			if reserve.RowsAffected == 0 {
 				return ErrEnterpriseQuotaExceeded
 			}
-			if err := tx.Model(&account).Update("reserved_amount", account.ReservedAmount.Add(amount)).Error; err != nil {
-				return err
-			}
 		} else {
-			if amount.GreaterThan(account.ReservedAmount) {
-				return fmt.Errorf("%w: release exceeds reservation", ErrEnterpriseQuotaExceeded)
+			// Without the condition inside the UPDATE, concurrent releases each
+			// subtract the same reservation and drive reserved_amount negative,
+			// which inflates the account's available quota.
+			release := tx.Model(&model.QuotaAccount{}).
+				Where("id = ? AND task_id = ? AND reserved_amount >= ?", account.ID, taskID, amount).
+				UpdateColumn("reserved_amount", gorm.Expr("reserved_amount - ?", amount))
+			if release.Error != nil {
+				return release.Error
 			}
-			if err := tx.Model(&account).Update("reserved_amount", account.ReservedAmount.Sub(amount)).Error; err != nil {
-				return err
+			if release.RowsAffected == 0 {
+				return fmt.Errorf("%w: release exceeds reservation", ErrEnterpriseQuotaExceeded)
 			}
 		}
 		return tx.Create(&model.QuotaLedger{OrganizationID: account.OrganizationID, AccountID: account.ID, TaskID: &taskID, EntryType: entryType, Amount: amount, ReferenceType: "task_quota", ReferenceID: referenceID, CreatedByUserID: actorID}).Error
