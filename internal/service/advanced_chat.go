@@ -357,6 +357,7 @@ func registerAdvancedChatUserRoutes(group *gin.RouterGroup) {
 	group.GET("/advanced-chat/workspace/directories", api.getWorkspaceDirectories)
 	group.GET("/advanced-chat/workspace/git/status", api.getWorkspaceGitStatus)
 	group.POST("/advanced-chat/workspace/git/action", api.runWorkspaceGitAction)
+	registerAdvancedChatTerminalRoutes(group)
 	group.GET("/advanced-chat/devices", api.listConnectorDevices)
 	group.GET("/advanced-chat/devices/:id", api.getConnectorDevice)
 	group.GET("/advanced-chat/devices/:id/tasks", api.listConnectorDeviceTasks)
