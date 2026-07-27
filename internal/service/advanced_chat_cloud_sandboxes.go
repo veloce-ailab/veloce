@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"log"
 	"net/http"
 	"strings"
 	"time"
@@ -71,6 +72,11 @@ const (
 	advancedChatConnectorModeSandboxd = "sandboxd"
 	advancedChatCloudSandboxReady     = "ready"
 	advancedChatCloudSandboxDeleted   = "deleted"
+
+	// advancedChatCloudSandboxCleanupAction asks the sandboxd host to remove a
+	// deleted sandbox's workspace directory. It is control-plane initiated and
+	// never billed.
+	advancedChatCloudSandboxCleanupAction = "cleanup_cloud_sandbox"
 )
 
 // Price fields are pointers so partial admin updates leave existing rates
@@ -470,7 +476,34 @@ func (api *advancedChatAPI) deleteCloudSandbox(c *gin.Context) {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to delete cloud sandbox"})
 		return
 	}
+	enqueueCloudSandboxCleanupTask(sandbox)
 	c.JSON(http.StatusOK, gin.H{"ok": true})
+}
+
+// enqueueCloudSandboxCleanupTask is best effort: the sandbox row is already
+// marked deleted, and the queued task waits for the host to come online if it
+// is not connected right now.
+func enqueueCloudSandboxCleanupTask(sandbox AdvancedChatCloudSandbox) {
+	var host AdvancedChatCloudSandboxHost
+	if err := model.DB.Where("id = ?", sandbox.HostID).First(&host).Error; err != nil {
+		log.Printf("cloud sandbox cleanup skipped for %s: host %s not found", sandbox.ID, sandbox.HostID)
+		return
+	}
+	payload, err := json.Marshal(map[string]interface{}{"cloud_sandbox_id": sandbox.ID})
+	if err != nil {
+		return
+	}
+	task := AdvancedChatConnectorTask{
+		ID:       newAdvancedChatID("act"),
+		UserID:   sandbox.UserID,
+		DeviceID: host.ConnectorDeviceID,
+		Action:   advancedChatCloudSandboxCleanupAction,
+		Payload:  string(payload),
+		Status:   advancedChatConnectorTaskStatusQueued,
+	}
+	if err := model.DB.Create(&task).Error; err != nil {
+		log.Printf("cloud sandbox cleanup task failed for %s: %v", sandbox.ID, err)
+	}
 }
 
 func (api *advancedChatAPI) listCloudSandboxCharges(c *gin.Context) {
@@ -539,6 +572,9 @@ func recordCloudSandboxTaskCharge(taskID string, finishedAt time.Time) error {
 		var task AdvancedChatConnectorTask
 		if err := tx.Where("id = ?", taskID).First(&task).Error; err != nil {
 			return err
+		}
+		if task.Action == advancedChatCloudSandboxCleanupAction {
+			return nil
 		}
 		var payload map[string]interface{}
 		if err := json.Unmarshal([]byte(task.Payload), &payload); err != nil {
