@@ -150,6 +150,12 @@ func InitCloudSandboxFeatures() error {
 	)
 }
 
+// cloudSandboxHostCommand matches the binary/flag layout the web frontend
+// shows for connector devices ("app -server ... -token ...").
+func cloudSandboxHostCommand(token string) string {
+	return "app -server <server-url> -token " + token + " -mode sandboxd -data-dir <data-dir>"
+}
+
 func requireCloudSandboxAdmin(c *gin.Context) (*model.User, bool) {
 	user, ok := currentAdvancedChatUser(c)
 	if !ok {
@@ -240,7 +246,7 @@ func (api *advancedChatAPI) createCloudSandboxHost(c *gin.Context) {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to create sandbox host"})
 		return
 	}
-	c.JSON(http.StatusCreated, gin.H{"host": host, "token": token, "command": "veloce-app -mode sandboxd -server <server-url> -token " + token})
+	c.JSON(http.StatusCreated, gin.H{"host": host, "token": token, "command": cloudSandboxHostCommand(token)})
 }
 
 func (api *advancedChatAPI) updateCloudSandboxHost(c *gin.Context) {
@@ -324,7 +330,7 @@ func (api *advancedChatAPI) rotateCloudSandboxHostToken(c *gin.Context) {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to rotate sandbox host token"})
 		return
 	}
-	c.JSON(http.StatusOK, gin.H{"host": host, "token": token, "command": "veloce-app -mode sandboxd -server <server-url> -token " + token})
+	c.JSON(http.StatusOK, gin.H{"host": host, "token": token, "command": cloudSandboxHostCommand(token)})
 }
 
 func (api *advancedChatAPI) listAvailableCloudSandboxHosts(c *gin.Context) {
