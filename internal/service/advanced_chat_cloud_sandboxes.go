@@ -30,8 +30,13 @@ type AdvancedChatCloudSandboxHost struct {
 	StoragePriceGBHour decimal.Decimal `gorm:"type:decimal(20,10);not null;default:0" json:"storage_price_gb_hour"`
 	RuntimeMultiplier  decimal.Decimal `gorm:"type:decimal(20,10);not null;default:1" json:"runtime_multiplier"`
 	LastSeenAt         *time.Time      `json:"last_seen_at,omitempty"`
+	Online             bool            `gorm:"-" json:"online"`
 	CreatedAt          time.Time       `json:"created_at"`
 	UpdatedAt          time.Time       `json:"updated_at"`
+}
+
+func (host *AdvancedChatCloudSandboxHost) fillOnline() {
+	host.Online = host.LastSeenAt != nil && time.Since(*host.LastSeenAt) <= advancedChatConnectorOnlineWindow
 }
 
 type AdvancedChatCloudSandbox struct {
@@ -172,6 +177,9 @@ func (api *advancedChatAPI) listCloudSandboxHosts(c *gin.Context) {
 	if err := model.DB.Order("created_at DESC").Find(&hosts).Error; err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to list sandbox hosts"})
 		return
+	}
+	for index := range hosts {
+		hosts[index].fillOnline()
 	}
 	c.JSON(http.StatusOK, hosts)
 }
@@ -322,6 +330,9 @@ func (api *advancedChatAPI) listAvailableCloudSandboxHosts(c *gin.Context) {
 	if err := model.DB.Where("enabled = ?", true).Order("name ASC").Find(&hosts).Error; err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to list sandbox hosts"})
 		return
+	}
+	for index := range hosts {
+		hosts[index].fillOnline()
 	}
 	c.JSON(http.StatusOK, hosts)
 }

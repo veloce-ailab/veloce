@@ -1194,16 +1194,23 @@ func prepareAdvancedChatAssistantRun(ctx context.Context, userID uint, input adv
 		// host policy replaces per-user connector approval prompts.
 		input.ConnectorApprovalMode = advancedChatConnectorApprovalFullAccess
 	}
-	connectorDevice, connectorWorkspace, err := loadAdvancedChatConnectorForRun(userID, input.ConnectorDeviceID, input.ConnectorWorkspacePath)
+	var connectorDevice *AdvancedChatConnectorDevice
+	var connectorWorkspace string
 	if input.CloudSandboxID != "" {
 		_, _, sandboxDevice, sandboxErr := loadCloudSandboxForUser(userID, input.CloudSandboxID)
 		if sandboxErr != nil {
 			return preparedAdvancedChatAssistantRun{}, http.StatusBadRequest, "Cloud sandbox is unavailable", sandboxErr
 		}
-		connectorDevice, connectorWorkspace, err = &sandboxDevice, "", nil
-	}
-	if err != nil {
-		return preparedAdvancedChatAssistantRun{}, http.StatusBadRequest, err.Error(), err
+		if !advancedChatConnectorDeviceOnline(sandboxDevice) {
+			return preparedAdvancedChatAssistantRun{}, http.StatusBadRequest, "Cloud sandbox host is offline", errors.New("cloud sandbox host is offline")
+		}
+		connectorDevice = &sandboxDevice
+	} else {
+		device, workspace, err := loadAdvancedChatConnectorForRun(userID, input.ConnectorDeviceID, input.ConnectorWorkspacePath)
+		if err != nil {
+			return preparedAdvancedChatAssistantRun{}, http.StatusBadRequest, err.Error(), err
+		}
+		connectorDevice, connectorWorkspace = device, workspace
 	}
 	workspaceSkills := []advancedChatWorkspaceSkill{}
 	if connectorDevice != nil && input.CloudSandboxID == "" {
