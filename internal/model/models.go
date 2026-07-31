@@ -187,17 +187,22 @@ type PasskeyCredential struct {
 
 // UserChannel represents a user-facing logical channel.
 type UserChannel struct {
-	ID               uint                     `gorm:"primaryKey" json:"id"`
-	Name             string                   `gorm:"uniqueIndex;size:100;not null" json:"name"`
-	Description      string                   `gorm:"size:255" json:"description"`
-	Multiplier       decimal.Decimal          `gorm:"type:decimal(10,4);default:1.0" json:"multiplier"`
-	RoutingAlgorithm string                   `gorm:"size:32;default:priority" json:"routing_algorithm"`
-	Enabled          bool                     `gorm:"default:true" json:"enabled"`
-	CreatedAt        time.Time                `json:"created_at"`
-	UpdatedAt        time.Time                `json:"updated_at"`
-	Channels         []Channel                `gorm:"foreignKey:UserChannelID" json:"channels,omitempty"`
-	AllowedGroups    []UserChannelGroupAccess `gorm:"foreignKey:UserChannelID" json:"allowed_groups,omitempty"`
-	AllowedUsers     []UserChannelUserAccess  `gorm:"foreignKey:UserChannelID" json:"allowed_users,omitempty"`
+	ID               uint            `gorm:"primaryKey" json:"id"`
+	Name             string          `gorm:"uniqueIndex;size:100;not null" json:"name"`
+	Description      string          `gorm:"size:255" json:"description"`
+	Multiplier       decimal.Decimal `gorm:"type:decimal(10,4);default:1.0" json:"multiplier"`
+	RoutingAlgorithm string          `gorm:"size:32;default:priority" json:"routing_algorithm"`
+	Enabled          bool            `gorm:"default:true" json:"enabled"`
+	// Each user receives an independent rate limit when routed to this logical
+	// channel. A disabled limit preserves the existing unrestricted behaviour.
+	RateLimitEnabled           bool                     `gorm:"default:false" json:"rate_limit_enabled"`
+	RateLimitRequestsPerMinute int                      `gorm:"default:0" json:"rate_limit_requests_per_minute"`
+	RateLimitBurst             int                      `gorm:"default:0" json:"rate_limit_burst"`
+	CreatedAt                  time.Time                `json:"created_at"`
+	UpdatedAt                  time.Time                `json:"updated_at"`
+	Channels                   []Channel                `gorm:"foreignKey:UserChannelID" json:"channels,omitempty"`
+	AllowedGroups              []UserChannelGroupAccess `gorm:"foreignKey:UserChannelID" json:"allowed_groups,omitempty"`
+	AllowedUsers               []UserChannelUserAccess  `gorm:"foreignKey:UserChannelID" json:"allowed_users,omitempty"`
 }
 
 // UserChannelGroupAccess restricts a user-facing channel to members of a group.

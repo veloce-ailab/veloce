@@ -25,6 +25,7 @@ import (
 	"github.com/veloce-ailab/veloce/internal/adapters"
 	"github.com/veloce-ailab/veloce/internal/cache"
 	"github.com/veloce-ailab/veloce/internal/model"
+	"github.com/veloce-ailab/veloce/internal/ratelimit"
 	"gorm.io/gorm"
 )
 
@@ -1230,10 +1231,45 @@ func (s *ProxyService) resolveTargets(c *gin.Context, modelName string) ([]*prox
 		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "No enabled model configuration for this model"})
 		return nil, false
 	}
+	if !allowUserChannelRequest(c, targets[0].User.ID, &targets[0].Channel.UserChannel) {
+		return nil, false
+	}
 	// 暂存已解析的目标：若之后上级调用失败（未计费），
 	// UpstreamFailureLogMiddleware 会用它补记一条零费用的失败明细
 	stashUpstreamFailureTarget(c, targets[0])
 	return targets, true
+}
+
+// allowUserChannelRequest applies the configured per-user ceiling on the
+// logical user channel selected for this request. It runs after routing so the
+// counter always belongs to the channel actually chosen for the model.
+func allowUserChannelRequest(c *gin.Context, userID uint, channel *model.UserChannel) bool {
+	decision := ratelimit.AllowUserChannel(userID, channel)
+	if c == nil {
+		return decision.Allowed
+	}
+	if decision.Limit > 0 {
+		c.Header("X-RateLimit-Limit", strconv.Itoa(decision.Limit))
+		c.Header("X-RateLimit-Remaining", strconv.Itoa(decision.Remaining))
+	}
+	if decision.Allowed {
+		return true
+	}
+	retryAfter := int(decision.RetryAfter.Seconds())
+	if decision.RetryAfter%time.Second != 0 {
+		retryAfter++
+	}
+	if retryAfter < 1 {
+		retryAfter = 1
+	}
+	c.Header("Retry-After", strconv.Itoa(retryAfter))
+	c.JSON(http.StatusTooManyRequests, gin.H{
+		"error":       "User channel rate limit exceeded",
+		"type":        "user_channel_rate_limit",
+		"retry_after": retryAfter,
+		"channel_id":  channel.ID,
+	})
+	return false
 }
 
 // groupCandidatesByUserChannel splits candidates into failover groups. With

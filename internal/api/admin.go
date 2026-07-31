@@ -3892,6 +3892,10 @@ func (api *UserChannelAPI) Create(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 		return
 	}
+	if err := validateUserChannelRateLimit(&channel); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
 	channel.RoutingAlgorithm = service.RoutingAlgorithm(channel.RoutingAlgorithm)
 	if err := model.DB.Create(&channel).Error; err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
@@ -3913,12 +3917,29 @@ func (api *UserChannelAPI) Update(c *gin.Context) {
 		return
 	}
 	channel.ID = channelID
+	if err := validateUserChannelRateLimit(&channel); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
 	channel.RoutingAlgorithm = service.RoutingAlgorithm(channel.RoutingAlgorithm)
 	if err := model.DB.Save(&channel).Error; err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
 	}
 	c.JSON(http.StatusOK, channel)
+}
+
+func validateUserChannelRateLimit(channel *model.UserChannel) error {
+	if channel == nil || !channel.RateLimitEnabled {
+		return nil
+	}
+	if channel.RateLimitRequestsPerMinute < 1 || channel.RateLimitRequestsPerMinute > 1_000_000 {
+		return errors.New("Rate limit requests per minute must be between 1 and 1000000")
+	}
+	if channel.RateLimitBurst < 0 || channel.RateLimitBurst > 1_000_000 {
+		return errors.New("Rate limit burst must be between 0 and 1000000")
+	}
+	return nil
 }
 
 func (api *UserChannelAPI) Delete(c *gin.Context) {

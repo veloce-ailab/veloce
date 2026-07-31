@@ -12,10 +12,10 @@ import (
 	"net/url"
 	"strings"
 
-	"github.com/veloce-ailab/veloce/internal/cache"
-	"github.com/veloce-ailab/veloce/internal/model"
 	"github.com/gin-gonic/gin"
 	"github.com/shopspring/decimal"
+	"github.com/veloce-ailab/veloce/internal/cache"
+	"github.com/veloce-ailab/veloce/internal/model"
 	"gorm.io/gorm"
 )
 
@@ -155,6 +155,9 @@ func ExecuteServerChatCompletion(c *gin.Context, user *model.User, req ChatExecu
 	channel := modelConfig.Channel
 	if channel.ID == 0 {
 		return nil, newChatExecutorError(http.StatusServiceUnavailable, "No enabled model configuration for this model")
+	}
+	if !allowUserChannelRequest(c, user.ID, &channel.UserChannel) {
+		return nil, withChatExecutorChannel(newChatExecutorError(http.StatusTooManyRequests, "User channel rate limit exceeded"), channel, modelName, "", "")
 	}
 
 	protocol := channelProtocol(channel.Type)
