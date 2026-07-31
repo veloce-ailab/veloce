@@ -1,15 +1,16 @@
 package service
 
 import (
-	"archive/zip"
-	"bytes"
+	"context"
+	"fmt"
+	"io"
 	"net/http"
 	"net/url"
-	"regexp"
 	"strings"
+	"time"
 
-	"github.com/veloce-ailab/veloce/internal/model"
 	"github.com/gin-gonic/gin"
+	"github.com/veloce-ailab/veloce/internal/model"
 )
 
 // CommunityFeatureEnabled 社区功能总开关（后台可关闭，默认开启）。
@@ -20,16 +21,13 @@ func CommunityFeatureEnabled() bool {
 
 // communitySkillPayload 社区技能详情：content 为 SKILL.md 全文
 type communitySkillPayload struct {
-	ID      string `json:"id"`
-	Name    string `json:"name"`
-	Summary string `json:"summary"`
-	Content string `json:"content"`
+	ID         string `json:"id"`
+	Name       string `json:"name"`
+	SourceName string `json:"source_name"`
 }
 
-var communitySkillSlugPattern = regexp.MustCompile(`[^a-z0-9-]+`)
-
 // importCommunitySkill 把社区投稿的技能导入为当前用户的技能包：
-// 将 SKILL.md 打包成单技能 zip 后走与上传完全相同的存储与校验路径。
+// 下载社区保存的原始归档，再走与本地上传完全相同的校验和入库路径。
 // 上游地址固定为社区站点，客户端无法借此抓取任意 URL。
 func (api *advancedChatAPI) importCommunitySkill(c *gin.Context) {
 	user, ok := currentAdvancedChatUser(c)
@@ -60,20 +58,22 @@ func (api *advancedChatAPI) importCommunitySkill(c *gin.Context) {
 		c.JSON(http.StatusBadGateway, gin.H{"error": "Community skill is temporarily unavailable"})
 		return
 	}
-	if strings.TrimSpace(payload.Content) == "" {
-		c.JSON(http.StatusUnprocessableEntity, gin.H{"error": "Community skill has no importable content"})
-		return
-	}
-
-	slug := communitySkillSlug(payload.Name)
-	archive, err := buildSingleSkillArchive(slug, payload.Content)
+	archive, err := fetchCommunitySkillArchive(c.Request.Context(), communityID)
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to package community skill"})
+		if err == errCommunityKnowledgeNotFound {
+			c.JSON(http.StatusNotFound, gin.H{"error": "Community skill not found"})
+			return
+		}
+		c.JSON(http.StatusBadGateway, gin.H{"error": "Community skill package is temporarily unavailable"})
 		return
 	}
-	// storeAdvancedChatSkillPackage 会解包、校验 SKILL.md manifest（name/description）
-	// 并落库，行为与手动上传技能包一致
-	pkg, skills, status, message, err := storeAdvancedChatSkillPackage(user.ID, slug+".zip", archive)
+	sourceName := strings.TrimSpace(payload.SourceName)
+	if sourceName == "" {
+		sourceName = strings.TrimSpace(payload.Name) + ".zip"
+	}
+	// storeAdvancedChatSkillPackage 会解包、校验每个 SKILL.md manifest 并落库，
+	// 与手动上传技能包走完全相同的路径。
+	pkg, skills, status, message, err := storeAdvancedChatSkillPackage(user.ID, sourceName, archive)
 	if err != nil {
 		c.JSON(status, gin.H{"error": message})
 		return
@@ -86,32 +86,27 @@ func (api *advancedChatAPI) importCommunitySkill(c *gin.Context) {
 	})
 }
 
-// communitySkillSlug 由技能名派生目录名（仅小写字母数字与连字符）
-func communitySkillSlug(name string) string {
-	slug := communitySkillSlugPattern.ReplaceAllString(strings.ToLower(strings.TrimSpace(name)), "-")
-	slug = strings.Trim(slug, "-")
-	if slug == "" {
-		return "community-skill"
-	}
-	if len(slug) > 60 {
-		slug = strings.Trim(slug[:60], "-")
-	}
-	return slug
-}
-
-// buildSingleSkillArchive 生成只包含 <slug>/SKILL.md 的内存 zip
-func buildSingleSkillArchive(slug, content string) ([]byte, error) {
-	var buffer bytes.Buffer
-	writer := zip.NewWriter(&buffer)
-	file, err := writer.Create(slug + "/SKILL.md")
+func fetchCommunitySkillArchive(ctx context.Context, skillID string) ([]byte, error) {
+	requestContext, cancel := context.WithTimeout(ctx, 20*time.Second)
+	defer cancel()
+	req, err := http.NewRequestWithContext(requestContext, http.MethodGet, communityKnowledgeAPIBaseURL+"/skills/"+url.PathEscape(skillID)+"/archive", nil)
 	if err != nil {
 		return nil, err
 	}
-	if _, err := file.Write([]byte(content)); err != nil {
-		return nil, err
+	resp, err := communityKnowledgeHTTPClient.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("community service unavailable: %w", err)
 	}
-	if err := writer.Close(); err != nil {
-		return nil, err
+	defer resp.Body.Close()
+	if resp.StatusCode == http.StatusNotFound {
+		return nil, errCommunityKnowledgeNotFound
 	}
-	return buffer.Bytes(), nil
+	if resp.StatusCode < http.StatusOK || resp.StatusCode >= http.StatusMultipleChoices {
+		return nil, fmt.Errorf("community service returned HTTP %d", resp.StatusCode)
+	}
+	data, err := io.ReadAll(io.LimitReader(resp.Body, advancedChatSkillPackageMaxArchiveBytes+1))
+	if err != nil || len(data) == 0 || len(data) > advancedChatSkillPackageMaxArchiveBytes {
+		return nil, fmt.Errorf("invalid community skill package")
+	}
+	return data, nil
 }
