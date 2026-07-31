@@ -15,9 +15,9 @@ import (
 	"strings"
 	"time"
 
+	"github.com/gin-gonic/gin"
 	"github.com/veloce-ailab/veloce/internal/config"
 	"github.com/veloce-ailab/veloce/internal/model"
-	"github.com/gin-gonic/gin"
 	"gorm.io/gorm"
 )
 
@@ -108,6 +108,8 @@ func registerPluginUserRoutes(group *gin.RouterGroup) {
 	plugins.GET("", api.listPlugins)
 	plugins.GET("/:id", api.getPlugin)
 	plugins.POST("", api.installPlugin)
+	plugins.GET("/market", api.listPluginMarket)
+	plugins.POST("/market/:id/install", api.installPluginFromMarket)
 	plugins.GET("/frontend", api.frontendExtensions)
 	plugins.POST("/:id/enable", api.enablePlugin)
 	plugins.POST("/:id/disable", api.disablePlugin)
