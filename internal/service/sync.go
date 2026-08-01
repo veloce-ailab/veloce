@@ -14,8 +14,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/veloce-ailab/veloce/internal/model"
 	"github.com/shopspring/decimal"
+	"github.com/veloce-ailab/veloce/internal/model"
 	"gorm.io/gorm"
 )
 
@@ -570,11 +570,18 @@ func upsertGlobalModelPrice(modelName string, quotaType int, inputPrice decimal.
 		"cached_input_price_tiers":      model.NormalizePriceTiers(cachedInputPriceTiers),
 		"cache_write_input_price_tiers": model.NormalizePriceTiers(cacheWriteInputPriceTiers),
 	}
-	if strings.TrimSpace(provider.ID) != "" && (strings.TrimSpace(globalModel.Provider) == "" || strings.TrimSpace(provider.ID) != "custom") {
+	// 同步来源的非 Custom 提供商由模型名自动推断，必须同时刷新分类和图标，
+	// 否则旧的错误分类或失效图标会一直保留在已有模型上。
+	if strings.TrimSpace(provider.ID) != "" && strings.TrimSpace(provider.ID) != "custom" {
 		updates["provider"] = provider.ID
-	}
-	if strings.TrimSpace(provider.IconURL) != "" && strings.TrimSpace(globalModel.ProviderIconURL) == "" {
-		updates["provider_icon_url"] = provider.IconURL
+		if strings.TrimSpace(provider.IconURL) != "" {
+			updates["provider_icon_url"] = provider.IconURL
+		}
+	} else if strings.TrimSpace(globalModel.Provider) == "" && strings.TrimSpace(provider.ID) != "" {
+		updates["provider"] = provider.ID
+		if strings.TrimSpace(provider.IconURL) != "" {
+			updates["provider_icon_url"] = provider.IconURL
+		}
 	}
 	if err := model.DB.Model(&globalModel).Updates(updates).Error; err != nil {
 		return err
