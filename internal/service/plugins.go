@@ -114,6 +114,8 @@ func registerPluginUserRoutes(group *gin.RouterGroup) {
 	plugins.GET("/updates", api.checkPluginUpdates)
 	plugins.POST("", api.installPlugin)
 	plugins.GET("/:id", api.getPlugin)
+	plugins.POST("/:id/update", api.startPluginUpdate)
+	plugins.GET("/:id/update/progress", api.pluginUpdateProgress)
 	plugins.POST("/:id/enable", api.enablePlugin)
 	plugins.POST("/:id/disable", api.disablePlugin)
 	plugins.DELETE("/:id", api.uninstallPlugin)
