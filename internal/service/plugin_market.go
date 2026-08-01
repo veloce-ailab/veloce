@@ -218,7 +218,7 @@ func installPluginStream(ctx context.Context, source io.Reader, filename string,
 		return model.Plugin{}, err
 	}
 	wasmPath := pluginWASMPath(manifest.ID)
-	if err := os.Remove(wasmPath); err != nil && !errors.Is(err, os.ErrNotExist) {
+	if err := removePluginModuleFiles(manifest.ID); err != nil {
 		return model.Plugin{}, errors.New("failed to replace old plugin files")
 	}
 	if err := os.MkdirAll(filepath.Dir(wasmPath), 0o755); err != nil {

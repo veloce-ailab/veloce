@@ -37,6 +37,7 @@ type PluginManifest struct {
 	Version     string               `json:"version"`
 	Description string               `json:"description"`
 	Author      string               `json:"author"`
+	GitHub      string               `json:"github,omitempty"`
 	WASM        string               `json:"wasm"`
 	Permissions []string             `json:"permissions"`
 	Hooks       []PluginHook         `json:"hooks"`
@@ -84,6 +85,7 @@ type pluginListItem struct {
 	Version     string               `json:"version"`
 	Description string               `json:"description"`
 	Author      string               `json:"author"`
+	GitHub      string               `json:"github,omitempty"`
 	Enabled     bool                 `json:"enabled"`
 	Permissions []string             `json:"permissions"`
 	Hooks       []PluginHook         `json:"hooks"`
@@ -106,11 +108,12 @@ func registerPluginUserRoutes(group *gin.RouterGroup) {
 	api := &pluginAPI{}
 	plugins := group.Group("/plugins")
 	plugins.GET("", api.listPlugins)
-	plugins.GET("/:id", api.getPlugin)
-	plugins.POST("", api.installPlugin)
 	plugins.GET("/market", api.listPluginMarket)
 	plugins.POST("/market/:id/install", api.installPluginFromMarket)
 	plugins.GET("/frontend", api.frontendExtensions)
+	plugins.GET("/updates", api.checkPluginUpdates)
+	plugins.POST("", api.installPlugin)
+	plugins.GET("/:id", api.getPlugin)
 	plugins.POST("/:id/enable", api.enablePlugin)
 	plugins.POST("/:id/disable", api.disablePlugin)
 	plugins.DELETE("/:id", api.uninstallPlugin)
@@ -234,7 +237,7 @@ func (api *pluginAPI) installPlugin(c *gin.Context) {
 		return
 	}
 	wasmPath := pluginWASMPath(manifest.ID)
-	if err := os.Remove(wasmPath); err != nil && !errors.Is(err, os.ErrNotExist) {
+	if err := removePluginModuleFiles(manifest.ID); err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to replace old plugin files"})
 		return
 	}
@@ -339,6 +342,11 @@ func (api *pluginAPI) setPluginEnabled(c *gin.Context, enabled bool) {
 			Payload: map[string]interface{}{"plugin_id": plugin.ID, "enabled": false},
 		})
 	}
+	plugin, err := setPluginModuleEnabled(plugin, enabled)
+	if err != nil {
+		c.JSON(http.StatusConflict, gin.H{"error": err.Error()})
+		return
+	}
 	if err := setUserPluginEnabled(user.ID, plugin.ID, enabled); err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to update plugin state"})
 		return
@@ -385,9 +393,7 @@ func (api *pluginAPI) uninstallPlugin(c *gin.Context) {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to uninstall plugin"})
 		return
 	}
-	if strings.TrimSpace(plugin.WASMPath) != "" {
-		_ = os.Remove(plugin.WASMPath)
-	}
+	_ = removePluginModuleFiles(plugin.ID)
 	_ = os.RemoveAll(filepath.Join(config.DataPath, "plugin-data", fmt.Sprint(user.ID), plugin.ID))
 	recordPluginLog(user.ID, plugin.ID, "info", "uninstall", "Plugin uninstalled", "")
 	c.JSON(http.StatusOK, gin.H{"message": "Plugin uninstalled"})
@@ -596,6 +602,7 @@ func pluginListResponse(plugin model.Plugin, enabled bool) pluginListItem {
 		Version:     plugin.Version,
 		Description: plugin.Description,
 		Author:      plugin.Author,
+		GitHub:      manifest.GitHub,
 		Enabled:     enabled,
 		Permissions: decodePluginStringList(plugin.PermissionsJSON),
 		Hooks:       decodeHooks(plugin.HooksJSON),
@@ -782,7 +789,13 @@ func loadPluginsOnStartup() error {
 		return err
 	}
 	for _, entry := range entries {
-		if entry.IsDir() || !strings.HasSuffix(strings.ToLower(entry.Name()), ".wasm") {
+		if entry.IsDir() {
+			continue
+		}
+		name := strings.ToLower(entry.Name())
+		enabled := strings.HasSuffix(name, ".wasm")
+		disabled := strings.HasSuffix(name, ".wasm.disabled")
+		if !enabled && !disabled {
 			continue
 		}
 		filePath := filepath.Join(root, entry.Name())
@@ -802,7 +815,7 @@ func loadPluginsOnStartup() error {
 			Version:         manifest.Version,
 			Description:     manifest.Description,
 			Author:          manifest.Author,
-			Enabled:         true,
+			Enabled:         enabled,
 			ManifestJSON:    string(raw),
 			PermissionsJSON: mustJSON(manifest.Permissions),
 			HooksJSON:       mustJSON(manifest.Hooks),
@@ -817,6 +830,10 @@ func loadPluginsOnStartup() error {
 		}
 		if err := model.DB.Where(&model.Plugin{ID: plugin.ID}).Assign(plugin).FirstOrCreate(&plugin).Error; err != nil {
 			recordPluginLog(0, manifest.ID, "warn", "startup_load_failed", err.Error(), mustJSON(gin.H{"path": filePath}))
+			continue
+		}
+		if !enabled {
+			model.DB.Model(&plugin).Update("last_error", "")
 			continue
 		}
 		if err := InitializePluginWASM(context.Background(), plugin); err != nil {
@@ -836,6 +853,57 @@ func loadPluginsOnStartup() error {
 	return nil
 }
 
+func pluginDisabledWASMPath(id string) string {
+	return pluginWASMPath(id) + ".disabled"
+}
+
+func removePluginModuleFiles(id string) error {
+	for _, modulePath := range []string{pluginWASMPath(id), pluginDisabledWASMPath(id)} {
+		if err := os.Remove(modulePath); err != nil && !errors.Is(err, os.ErrNotExist) {
+			return err
+		}
+	}
+	return nil
+}
+
+// setPluginModuleEnabled changes the on-disk suffix as the durable global
+// state. A disabled module still contains its manifest and is therefore
+// discoverable at startup without being initialized.
+func setPluginModuleEnabled(plugin model.Plugin, enabled bool) (model.Plugin, error) {
+	activePath, disabledPath := pluginWASMPath(plugin.ID), pluginDisabledWASMPath(plugin.ID)
+	source, target := disabledPath, activePath
+	if !enabled {
+		source, target = activePath, disabledPath
+	}
+	if _, err := os.Stat(source); err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return model.Plugin{}, errors.New("plugin module file is unavailable")
+		}
+		return model.Plugin{}, fmt.Errorf("could not access plugin module: %w", err)
+	}
+	if _, err := os.Stat(target); err == nil {
+		return model.Plugin{}, errors.New("plugin module state is inconsistent")
+	} else if !errors.Is(err, os.ErrNotExist) {
+		return model.Plugin{}, fmt.Errorf("could not access plugin module: %w", err)
+	}
+	if err := os.Rename(source, target); err != nil {
+		return model.Plugin{}, fmt.Errorf("could not update plugin module state: %w", err)
+	}
+	plugin.Enabled, plugin.WASMPath = enabled, target
+	if err := model.DB.Model(&model.Plugin{}).Where("id = ?", plugin.ID).Updates(map[string]interface{}{"enabled": enabled, "wasm_path": target}).Error; err != nil {
+		_ = os.Rename(target, source)
+		return model.Plugin{}, errors.New("failed to save plugin state")
+	}
+	if enabled {
+		if err := InitializePluginWASM(context.Background(), plugin); err != nil {
+			model.DB.Model(&model.Plugin{}).Where("id = ?", plugin.ID).Update("last_error", err.Error())
+			return plugin, nil
+		}
+		_ = model.DB.Model(&model.Plugin{}).Where("id = ?", plugin.ID).Update("last_error", "").Error
+	}
+	return plugin, nil
+}
+
 func setUserPluginEnabled(userID uint, pluginID string, enabled bool) error {
 	state := model.UserPluginState{UserID: userID, PluginID: pluginID}
 	return model.DB.Where(&model.UserPluginState{UserID: userID, PluginID: pluginID}).
@@ -852,6 +920,11 @@ func validatePluginManifest(manifest PluginManifest) error {
 	}
 	if strings.TrimSpace(manifest.Version) == "" {
 		return errors.New("plugin version is required")
+	}
+	if manifest.GitHub != "" {
+		if _, _, ok := pluginGitHubRepository(manifest.GitHub); !ok {
+			return errors.New("plugin github must be an https://github.com/owner/repository URL")
+		}
 	}
 	for _, permission := range manifest.Permissions {
 		if strings.TrimSpace(permission) == "" {
@@ -963,6 +1036,7 @@ func normalizePluginManifest(manifest PluginManifest) PluginManifest {
 	manifest.Name = strings.TrimSpace(manifest.Name)
 	manifest.Version = strings.TrimSpace(manifest.Version)
 	manifest.Author = strings.TrimSpace(manifest.Author)
+	manifest.GitHub = strings.TrimSpace(manifest.GitHub)
 	manifest.WASM = strings.TrimSpace(manifest.WASM)
 	for i := range manifest.Permissions {
 		manifest.Permissions[i] = strings.TrimSpace(manifest.Permissions[i])
