@@ -271,6 +271,8 @@ func callAdvancedChatTerminalTask(ctx context.Context, userID uint, deviceID str
 // waitAdvancedChatTerminalTask polls more aggressively than the shared connector
 // wait so keystrokes and output do not lag a full second behind the device.
 func waitAdvancedChatTerminalTask(ctx context.Context, taskID string, userID uint) (string, error) {
+	signal, stopWatching := watchAdvancedChatConnectorSignal(advancedChatConnectorTaskSignalKey(taskID))
+	defer stopWatching()
 	ticker := time.NewTicker(advancedChatTerminalTaskPoll)
 	defer ticker.Stop()
 	for {
@@ -299,6 +301,7 @@ func waitAdvancedChatTerminalTask(ctx context.Context, taskID string, userID uin
 					"updated_at":    now,
 				}).Error
 			return "", errors.New("connector terminal task timed out")
+		case <-signal:
 		case <-ticker.C:
 		}
 	}

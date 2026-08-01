@@ -18,8 +18,8 @@ import (
 	"sync"
 	"time"
 
-	"github.com/veloce-ailab/veloce/internal/model"
 	"github.com/gin-gonic/gin"
+	"github.com/veloce-ailab/veloce/internal/model"
 	"gorm.io/gorm"
 )
 
@@ -76,6 +76,46 @@ const (
 )
 
 var advancedChatDesktopConnectorEnsureMu sync.Mutex
+
+// advancedChatConnectorSignals wakes in-process long polls as soon as a task is
+// queued or completed. Database polling remains as the cross-process fallback,
+// while local connector terminals no longer wait for the next one-second tick.
+var advancedChatConnectorSignals = struct {
+	sync.Mutex
+	waiters map[string]map[chan struct{}]struct{}
+}{waiters: map[string]map[chan struct{}]struct{}{}}
+
+func watchAdvancedChatConnectorSignal(key string) (<-chan struct{}, func()) {
+	channel := make(chan struct{}, 1)
+	advancedChatConnectorSignals.Lock()
+	if advancedChatConnectorSignals.waiters[key] == nil {
+		advancedChatConnectorSignals.waiters[key] = map[chan struct{}]struct{}{}
+	}
+	advancedChatConnectorSignals.waiters[key][channel] = struct{}{}
+	advancedChatConnectorSignals.Unlock()
+	return channel, func() {
+		advancedChatConnectorSignals.Lock()
+		delete(advancedChatConnectorSignals.waiters[key], channel)
+		if len(advancedChatConnectorSignals.waiters[key]) == 0 {
+			delete(advancedChatConnectorSignals.waiters, key)
+		}
+		advancedChatConnectorSignals.Unlock()
+	}
+}
+
+func notifyAdvancedChatConnectorSignal(key string) {
+	advancedChatConnectorSignals.Lock()
+	defer advancedChatConnectorSignals.Unlock()
+	for channel := range advancedChatConnectorSignals.waiters[key] {
+		select {
+		case channel <- struct{}{}:
+		default:
+		}
+	}
+}
+
+func advancedChatConnectorDeviceSignalKey(deviceID string) string { return "device:" + deviceID }
+func advancedChatConnectorTaskSignalKey(taskID string) string     { return "task:" + taskID }
 
 type AdvancedChatConnectorDevice struct {
 	ID        string     `gorm:"primaryKey;size:80" json:"id"`
@@ -1198,7 +1238,10 @@ func (api *advancedChatAPI) connectorNextTask(c *gin.Context) {
 	if !ok {
 		return
 	}
-	deadline := time.Now().Add(25 * time.Second)
+	signal, stopWatching := watchAdvancedChatConnectorSignal(advancedChatConnectorDeviceSignalKey(device.ID))
+	defer stopWatching()
+	timeout := time.NewTimer(25 * time.Second)
+	defer timeout.Stop()
 	for {
 		task, err := claimAdvancedChatConnectorTask(device.UserID, device.ID)
 		if err != nil {
@@ -1209,14 +1252,14 @@ func (api *advancedChatAPI) connectorNextTask(c *gin.Context) {
 			c.JSON(http.StatusOK, gin.H{"task": advancedChatConnectorTaskResponseFromModel(*task)})
 			return
 		}
-		if time.Now().After(deadline) {
-			c.JSON(http.StatusOK, gin.H{"task": nil})
-			return
-		}
 		select {
 		case <-c.Request.Context().Done():
 			return
-		case <-time.After(time.Second):
+		case <-timeout.C:
+			c.JSON(http.StatusOK, gin.H{"task": nil})
+			return
+		case <-signal:
+		case <-time.After(time.Second): // Cross-process fallback when a different node queued the task.
 		}
 	}
 }
@@ -1259,6 +1302,7 @@ func (api *advancedChatAPI) connectorTaskResult(c *gin.Context) {
 		c.JSON(http.StatusOK, gin.H{"ok": true, "ignored": true})
 		return
 	}
+	notifyAdvancedChatConnectorSignal(advancedChatConnectorTaskSignalKey(c.Param("id")))
 	if normalizeAdvancedChatConnectorMode(device.Mode) == advancedChatConnectorModeSandboxd {
 		if err := recordCloudSandboxTaskCharge(c.Param("id"), now); err != nil {
 			log.Printf("cloud sandbox billing failed for task %s: %v", c.Param("id"), err)
@@ -1834,6 +1878,9 @@ func createAdvancedChatConnectorTask(userID uint, runID string, binding advanced
 	if err := model.DB.Create(&task).Error; err != nil {
 		return AdvancedChatConnectorTask{}, err
 	}
+	if status == advancedChatConnectorTaskStatusQueued {
+		notifyAdvancedChatConnectorSignal(advancedChatConnectorDeviceSignalKey(task.DeviceID))
+	}
 	return task, nil
 }
 
@@ -1921,6 +1968,9 @@ func createAdvancedChatRawConnectorTask(userID uint, runID string, binding advan
 	}
 	if err := model.DB.Create(&task).Error; err != nil {
 		return AdvancedChatConnectorTask{}, err
+	}
+	if status == advancedChatConnectorTaskStatusQueued {
+		notifyAdvancedChatConnectorSignal(advancedChatConnectorDeviceSignalKey(task.DeviceID))
 	}
 	return task, nil
 }
@@ -2784,6 +2834,8 @@ func connectorCommandAutoApproved(command string, prefixes []string) bool {
 func waitAdvancedChatConnectorTask(ctx context.Context, taskID string, userID uint) (string, error) {
 	ctx, cancel := context.WithTimeout(ctx, advancedChatConnectorTaskWait)
 	defer cancel()
+	signal, stopWatching := watchAdvancedChatConnectorSignal(advancedChatConnectorTaskSignalKey(taskID))
+	defer stopWatching()
 	ticker := time.NewTicker(time.Second)
 	defer ticker.Stop()
 	for {
@@ -2812,6 +2864,7 @@ func waitAdvancedChatConnectorTask(ctx context.Context, taskID string, userID ui
 					"updated_at":    now,
 				}).Error
 			return "", ctx.Err()
+		case <-signal:
 		case <-ticker.C:
 		}
 	}
