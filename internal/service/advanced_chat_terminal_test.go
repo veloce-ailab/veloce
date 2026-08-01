@@ -1,6 +1,7 @@
 package service
 
 import (
+	"encoding/base64"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -135,10 +136,11 @@ func callTerminalAPI(t *testing.T, router *gin.Engine, method string, path strin
 func TestConnectorTerminalOpenInputReadClose(t *testing.T) {
 	router, user, device := setupTerminalTestRouter(t)
 	connector := startFakeTerminalConnector(user.ID, device.ID, map[string]string{
-		"terminal_open":  `{"terminal_id":"term_abc","shell":"cmd.exe","os":"windows","cwd":"D:\\work","offset":0}`,
-		"terminal_input": `{"ok":true,"terminal_id":"term_abc"}`,
-		"terminal_read":  `{"terminal_id":"term_abc","data":"hello","offset":5,"alive":true}`,
-		"terminal_close": `{"ok":true,"terminal_id":"term_abc"}`,
+		"terminal_open":   `{"terminal_id":"term_abc","shell":"cmd.exe","os":"windows","cwd":"D:\\work","offset":0}`,
+		"terminal_input":  `{"ok":true,"terminal_id":"term_abc"}`,
+		"terminal_read":   `{"terminal_id":"term_abc","data":"aGVsbG8=","offset":5,"alive":true}`,
+		"terminal_resize": `{"ok":true,"terminal_id":"term_abc","cols":100,"rows":28}`,
+		"terminal_close":  `{"ok":true,"terminal_id":"term_abc"}`,
 	}, "")
 	defer connector.close()
 
@@ -152,7 +154,7 @@ func TestConnectorTerminalOpenInputReadClose(t *testing.T) {
 	}
 
 	status, payload = callTerminalAPI(t, router, http.MethodPost, "/api/user/advanced-chat/terminal/input",
-		`{"connector_device_id":"dev_terminal","terminal_id":"term_abc","data":"echo hi\n"}`)
+		`{"connector_device_id":"dev_terminal","terminal_id":"term_abc","data":"ZWNobyBoaQo="}`)
 	if status != http.StatusOK || payload["ok"] != true {
 		t.Fatalf("input status %d: %v", status, payload)
 	}
@@ -162,8 +164,14 @@ func TestConnectorTerminalOpenInputReadClose(t *testing.T) {
 	if status != http.StatusOK {
 		t.Fatalf("output status %d: %v", status, payload)
 	}
-	if payload["data"] != "hello" || payload["alive"] != true {
+	if payload["data"] != "aGVsbG8=" || payload["alive"] != true {
 		t.Fatalf("unexpected output response: %v", payload)
+	}
+
+	status, payload = callTerminalAPI(t, router, http.MethodPost, "/api/user/advanced-chat/terminal/resize",
+		`{"connector_device_id":"dev_terminal","terminal_id":"term_abc","cols":100,"rows":28}`)
+	if status != http.StatusOK || payload["ok"] != true {
+		t.Fatalf("resize status %d: %v", status, payload)
 	}
 
 	status, payload = callTerminalAPI(t, router, http.MethodPost, "/api/user/advanced-chat/terminal/close",
@@ -183,9 +191,13 @@ func TestConnectorTerminalOpenInputReadClose(t *testing.T) {
 			t.Fatalf("task %s ended as %s", task.Action, task.Status)
 		}
 	}
-	expected := "terminal_open,terminal_input,terminal_read,terminal_close"
+	expected := "terminal_open,terminal_input,terminal_read,terminal_resize,terminal_close"
 	if strings.Join(actions, ",") != expected {
 		t.Fatalf("dispatched actions %v, want %s", actions, expected)
+	}
+	inputPayload := terminalTaskPayload(t, user.ID, "terminal_input")
+	if inputPayload["data"] != "ZWNobyBoaQo=" {
+		t.Fatalf("terminal input was not forwarded as base64: %v", inputPayload)
 	}
 }
 
@@ -198,7 +210,7 @@ func TestConnectorTerminalPassesWorkspaceAndOffsetToDevice(t *testing.T) {
 	defer connector.close()
 
 	if status, payload := callTerminalAPI(t, router, http.MethodPost, "/api/user/advanced-chat/terminal/open",
-		`{"connector_device_id":"dev_terminal","connector_workspace_path":"/srv/app"}`); status != http.StatusOK {
+		`{"connector_device_id":"dev_terminal","connector_workspace_path":"/srv/app","cols":111,"rows":37}`); status != http.StatusOK {
 		t.Fatalf("open status %d: %v", status, payload)
 	}
 	if status, payload := callTerminalAPI(t, router, http.MethodGet,
@@ -209,6 +221,9 @@ func TestConnectorTerminalPassesWorkspaceAndOffsetToDevice(t *testing.T) {
 	openPayload := terminalTaskPayload(t, user.ID, "terminal_open")
 	if openPayload["workspace_path"] != "/srv/app" {
 		t.Fatalf("workspace_path not forwarded: %v", openPayload)
+	}
+	if openPayload["cols"] != float64(111) || openPayload["rows"] != float64(37) {
+		t.Fatalf("terminal dimensions not forwarded: %v", openPayload)
 	}
 	readPayload := terminalTaskPayload(t, user.ID, "terminal_read")
 	if readPayload["offset"] != float64(42) {
@@ -248,9 +263,17 @@ func TestConnectorTerminalRejectsBadRequests(t *testing.T) {
 		`{"connector_device_id":"dev_missing"}`); status != http.StatusBadRequest {
 		t.Fatalf("unknown device status %d, want 400", status)
 	}
-	oversized := `{"connector_device_id":"dev_terminal","terminal_id":"term_abc","data":"` + strings.Repeat("a", advancedChatTerminalMaxInputSize+1) + `"}`
+	oversized := `{"connector_device_id":"dev_terminal","terminal_id":"term_abc","data":"` + base64.StdEncoding.EncodeToString([]byte(strings.Repeat("a", advancedChatTerminalMaxInputSize+1))) + `"}`
 	if status, _ := callTerminalAPI(t, router, http.MethodPost, "/api/user/advanced-chat/terminal/input", oversized); status != http.StatusBadRequest {
 		t.Fatalf("oversized input status %d, want 400", status)
+	}
+	if status, _ := callTerminalAPI(t, router, http.MethodPost, "/api/user/advanced-chat/terminal/input",
+		`{"connector_device_id":"dev_terminal","terminal_id":"term_abc","data":"not base64!"}`); status != http.StatusBadRequest {
+		t.Fatalf("invalid base64 status %d, want 400", status)
+	}
+	if status, _ := callTerminalAPI(t, router, http.MethodPost, "/api/user/advanced-chat/terminal/resize",
+		`{"connector_device_id":"dev_terminal","terminal_id":"term_abc","cols":501,"rows":30}`); status != http.StatusBadRequest {
+		t.Fatalf("oversized dimensions status %d, want 400", status)
 	}
 }
 

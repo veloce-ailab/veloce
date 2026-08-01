@@ -2,6 +2,7 @@ package service
 
 import (
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"net/http"
@@ -18,12 +19,25 @@ const (
 	advancedChatTerminalTaskPoll     = 150 * time.Millisecond
 	advancedChatTerminalMaxInputSize = 8 * 1024
 	advancedChatTerminalIDMaxLength  = 80
+	advancedChatTerminalDefaultCols  = 120
+	advancedChatTerminalDefaultRows  = 30
+	advancedChatTerminalMaxCols      = 500
+	advancedChatTerminalMaxRows      = 200
 )
 
 type advancedChatTerminalOpenInput struct {
 	ConnectorDeviceID      string `json:"connector_device_id"`
 	ConnectorWorkspacePath string `json:"connector_workspace_path"`
 	Shell                  string `json:"shell"`
+	Cols                   int    `json:"cols"`
+	Rows                   int    `json:"rows"`
+}
+
+type advancedChatTerminalResizeInput struct {
+	ConnectorDeviceID string `json:"connector_device_id"`
+	TerminalID        string `json:"terminal_id"`
+	Cols              int    `json:"cols"`
+	Rows              int    `json:"rows"`
 }
 
 type advancedChatTerminalInputInput struct {
@@ -42,6 +56,7 @@ func registerAdvancedChatTerminalRoutes(group *gin.RouterGroup) {
 	group.POST("/advanced-chat/terminal/open", api.openConnectorTerminal)
 	group.POST("/advanced-chat/terminal/input", api.writeConnectorTerminal)
 	group.GET("/advanced-chat/terminal/output", api.readConnectorTerminal)
+	group.POST("/advanced-chat/terminal/resize", api.resizeConnectorTerminal)
 	group.POST("/advanced-chat/terminal/close", api.closeConnectorTerminal)
 }
 
@@ -60,8 +75,14 @@ func (api *advancedChatAPI) openConnectorTerminal(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "Unsupported terminal shell"})
 		return
 	}
+	cols, rows, ok := advancedChatTerminalSize(c, input.Cols, input.Rows)
+	if !ok {
+		return
+	}
 	payload := map[string]interface{}{
 		"workspace_path": strings.TrimSpace(input.ConnectorWorkspacePath),
+		"cols":           cols,
+		"rows":           rows,
 	}
 	if shell != "" {
 		payload["shell"] = shell
@@ -83,13 +104,43 @@ func (api *advancedChatAPI) writeConnectorTerminal(c *gin.Context) {
 	if !ok {
 		return
 	}
-	if len(input.Data) > advancedChatTerminalMaxInputSize {
+	data, err := base64.StdEncoding.DecodeString(input.Data)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Terminal input must be base64"})
+		return
+	}
+	if len(data) > advancedChatTerminalMaxInputSize {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "Terminal input is too large"})
 		return
 	}
 	respondAdvancedChatTerminalTask(c, user.ID, device.ID, "terminal_input", map[string]interface{}{
 		"terminal_id": terminalID,
 		"data":        input.Data,
+	})
+}
+
+func (api *advancedChatAPI) resizeConnectorTerminal(c *gin.Context) {
+	var input advancedChatTerminalResizeInput
+	if err := c.ShouldBindJSON(&input); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+	user, device, ok := loadAdvancedChatTerminalDevice(c, input.ConnectorDeviceID)
+	if !ok {
+		return
+	}
+	terminalID, ok := advancedChatTerminalID(c, input.TerminalID)
+	if !ok {
+		return
+	}
+	cols, rows, ok := advancedChatTerminalSize(c, input.Cols, input.Rows)
+	if !ok {
+		return
+	}
+	respondAdvancedChatTerminalTask(c, user.ID, device.ID, "terminal_resize", map[string]interface{}{
+		"terminal_id": terminalID,
+		"cols":        cols,
+		"rows":        rows,
 	})
 }
 
@@ -163,6 +214,20 @@ func advancedChatTerminalID(c *gin.Context, value string) (string, bool) {
 		return "", false
 	}
 	return terminalID, true
+}
+
+func advancedChatTerminalSize(c *gin.Context, cols int, rows int) (int, int, bool) {
+	if cols < 0 || rows < 0 || cols > advancedChatTerminalMaxCols || rows > advancedChatTerminalMaxRows {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Terminal dimensions are out of range"})
+		return 0, 0, false
+	}
+	if cols == 0 {
+		cols = advancedChatTerminalDefaultCols
+	}
+	if rows == 0 {
+		rows = advancedChatTerminalDefaultRows
+	}
+	return cols, rows, true
 }
 
 func advancedChatTerminalShellAllowed(shell string) bool {
