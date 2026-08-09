@@ -13,9 +13,9 @@ import (
 	"strings"
 	"time"
 
-	"github.com/veloce-ailab/veloce/internal/model"
 	"github.com/gin-gonic/gin"
 	"github.com/shopspring/decimal"
+	"github.com/veloce-ailab/veloce/internal/model"
 	"gorm.io/gorm"
 )
 
@@ -47,7 +47,6 @@ type advancedChatCompletionInput struct {
 	KnowledgeBaseIDs         []string                        `json:"knowledge_base_ids"`
 	ConnectorDeviceID        string                          `json:"connector_device_id"`
 	ConnectorWorkspacePath   string                          `json:"connector_workspace_path"`
-	CloudSandboxID           string                          `json:"cloud_sandbox_id"`
 	ConnectorAutoApprove     bool                            `json:"connector_auto_approve"`
 	ConnectorApprovalMode    string                          `json:"connector_approval_mode"`
 	ConnectorCommandPrefixes []string                        `json:"connector_command_prefixes"`
@@ -175,7 +174,6 @@ func (api *advancedChatAPI) completeChat(c *gin.Context) {
 	}
 	input.ConnectorDeviceID = ""
 	input.ConnectorWorkspacePath = ""
-	input.CloudSandboxID = ""
 	input.ConnectorAutoApprove = false
 	input.ConnectorApprovalMode = advancedChatConnectorApprovalManual
 	input.ConnectorCommandPrefixes = nil
@@ -314,7 +312,9 @@ func (api *advancedChatAPI) completeChat(c *gin.Context) {
 	executorMessages := make([]ChatExecutorMessage, 0, len(presetMessages)+len(messages)+maxToolRounds*2)
 	executorMessages = append(executorMessages, advancedChatPresetExecutorMessages(presetMessages)...)
 	modelMessages := messages
-	if input.AutoCompressContext { modelMessages = compressAdvancedChatMessages(modelMessages) }
+	if input.AutoCompressContext {
+		modelMessages = compressAdvancedChatMessages(modelMessages)
+	}
 	for _, message := range modelMessages {
 		executorMessages = append(executorMessages, advancedChatExecutorMessage(user.ID, message))
 	}
@@ -531,15 +531,23 @@ const advancedChatContextCompressionChars = 48000
 
 func compressAdvancedChatMessages(messages []advancedChatCompletionMessage) []advancedChatCompletionMessage {
 	total := 0
-	for _, message := range messages { total += len([]rune(message.Content)) }
-	if total <= advancedChatContextCompressionChars || len(messages) <= 8 { return messages }
+	for _, message := range messages {
+		total += len([]rune(message.Content))
+	}
+	if total <= advancedChatContextCompressionChars || len(messages) <= 8 {
+		return messages
+	}
 	keep := 12
 	dropped := messages[:len(messages)-keep]
 	parts := make([]string, 0, len(dropped))
 	for _, message := range dropped {
 		content := strings.Join(strings.Fields(message.Content), " ")
-		if len([]rune(content)) > 240 { content = string([]rune(content)[:240]) + "..." }
-		if content != "" { parts = append(parts, message.Role+": "+content) }
+		if len([]rune(content)) > 240 {
+			content = string([]rune(content)[:240]) + "..."
+		}
+		if content != "" {
+			parts = append(parts, message.Role+": "+content)
+		}
 	}
 	summary := "[Earlier conversation compressed for context]\n" + strings.Join(parts, "\n")
 	return append([]advancedChatCompletionMessage{{Role: "assistant", Content: summary}}, messages[len(messages)-keep:]...)

@@ -9,9 +9,9 @@ import (
 	"strings"
 	"time"
 
-	"github.com/veloce-ailab/veloce/internal/model"
 	"github.com/gin-gonic/gin"
 	"github.com/shopspring/decimal"
+	"github.com/veloce-ailab/veloce/internal/model"
 	"gorm.io/gorm"
 )
 
@@ -19,21 +19,18 @@ type personalCompanyRuntimeBindingInput struct {
 	AdvancedChatAgentID      string   `json:"advanced_chat_agent_id"`
 	ConnectorDeviceID        string   `json:"connector_device_id"`
 	ConnectorWorkspacePath   string   `json:"connector_workspace_path"`
-	CloudSandboxID           string   `json:"cloud_sandbox_id"`
 	ConnectorCommandPrefixes []string `json:"connector_command_prefixes"`
 }
 
 type personalCompanyRuntimePolicy struct {
 	ConnectorDeviceID        string   `json:"connector_device_id,omitempty"`
 	ConnectorWorkspacePath   string   `json:"connector_workspace_path,omitempty"`
-	CloudSandboxID           string   `json:"cloud_sandbox_id,omitempty"`
 	ConnectorCommandPrefixes []string `json:"connector_command_prefixes,omitempty"`
 }
 
 type personalCompanyStudioRuntimeInput struct {
 	ConnectorDeviceID        string   `json:"connector_device_id"`
 	ConnectorWorkspacePath   string   `json:"connector_workspace_path"`
-	CloudSandboxID           string   `json:"cloud_sandbox_id"`
 	ConnectorCommandPrefixes []string `json:"connector_command_prefixes"`
 }
 
@@ -63,17 +60,7 @@ func (api *personalCompanyAPI) updateStudioRuntime(c *gin.Context) {
 	}
 	deviceID := strings.TrimSpace(input.ConnectorDeviceID)
 	workspacePath := strings.TrimSpace(input.ConnectorWorkspacePath)
-	cloudSandboxID := strings.TrimSpace(input.CloudSandboxID)
-	if cloudSandboxID != "" {
-		if deviceID != "" || workspacePath != "" {
-			c.JSON(http.StatusBadRequest, gin.H{"error": "Choose either a cloud sandbox or a local connector"})
-			return
-		}
-		if _, _, _, err := loadCloudSandboxForUser(ctx.userID, cloudSandboxID); err != nil {
-			c.JSON(http.StatusBadRequest, gin.H{"error": "Cloud sandbox is unavailable"})
-			return
-		}
-	} else if deviceID != "" || workspacePath != "" {
+	if deviceID != "" || workspacePath != "" {
 		if _, _, err := loadAdvancedChatConnectorForRun(ctx.userID, deviceID, workspacePath); err != nil {
 			c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 			return
@@ -88,17 +75,16 @@ func (api *personalCompanyAPI) updateStudioRuntime(c *gin.Context) {
 		if err := tx.Model(&model.PersonalCompany{}).Where("id = ? AND owner_user_id = ?", company.ID, ctx.userID).Updates(map[string]interface{}{
 			"connector_device_id":        deviceID,
 			"connector_workspace_path":   workspacePath,
-			"cloud_sandbox_id":           cloudSandboxID,
 			"connector_command_prefixes": string(prefixes),
 		}).Error; err != nil {
 			return err
 		}
-		return createPersonalCompanyAuditEvent(tx, company.ID, nil, "owner", ctx.userID, "studio.runtime_configured", fmt.Sprintf(`{"connector_device_id":%q,"workspace_path":%q,"cloud_sandbox_id":%q}`, deviceID, workspacePath, cloudSandboxID))
+		return createPersonalCompanyAuditEvent(tx, company.ID, nil, "owner", ctx.userID, "studio.runtime_configured", fmt.Sprintf(`{"connector_device_id":%q,"workspace_path":%q}`, deviceID, workspacePath))
 	}); err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to configure Studio runtime"})
 		return
 	}
-	c.JSON(http.StatusOK, gin.H{"connector_device_id": deviceID, "connector_workspace_path": workspacePath, "cloud_sandbox_id": cloudSandboxID})
+	c.JSON(http.StatusOK, gin.H{"connector_device_id": deviceID, "connector_workspace_path": workspacePath})
 }
 
 func (api *personalCompanyAPI) updateStudioScheduler(c *gin.Context) {
@@ -335,7 +321,7 @@ func startPersonalCompanyWorkRun(company model.PersonalCompany, userID, workItem
 			return model.CompanyWorkAttempt{}, "", errors.New("bound Agent Studio is unavailable")
 		}
 		_ = json.Unmarshal([]byte(company.ConnectorCommandPrefixes), &policy.ConnectorCommandPrefixes)
-		policy.ConnectorDeviceID, policy.ConnectorWorkspacePath, policy.CloudSandboxID = company.ConnectorDeviceID, company.ConnectorWorkspacePath, company.CloudSandboxID
+		policy.ConnectorDeviceID, policy.ConnectorWorkspacePath = company.ConnectorDeviceID, company.ConnectorWorkspacePath
 		mode, agentGroupID = advancedChatModeAgentGroup, company.AgentGroupID
 	} else {
 		var employee model.PersonalCompanyEmployee
@@ -357,7 +343,7 @@ func startPersonalCompanyWorkRun(company model.PersonalCompany, userID, workItem
 		modelName, agentID = agent.DefaultModel, employee.AdvancedChatAgentID
 	}
 	prompt := fmt.Sprintf("You are completing a governed Personal Company work item.\nTitle: %s\nDescription: %s\nDefinition of done: %s\nInput snapshot: %s\n\nUse only the provided tools. Never perform external side effects without the connector's manual approval. Return a concise result with evidence, unresolved risks, and next steps.", work.Title, work.Description, work.DefinitionOfDone, work.InputSnapshot)
-	input := advancedChatCompletionInput{SessionID: newAdvancedChatID("pcw"), Title: "Personal Company: " + work.Title, ModelName: modelName, Messages: []advancedChatCompletionMessage{{Role: "user", Content: prompt}}, Mode: mode, AgentID: agentID, AgentGroupID: agentGroupID, ConnectorDeviceID: policy.ConnectorDeviceID, ConnectorWorkspacePath: policy.ConnectorWorkspacePath, CloudSandboxID: policy.CloudSandboxID, ConnectorApprovalMode: advancedChatConnectorApprovalManual, ConnectorCommandPrefixes: policy.ConnectorCommandPrefixes, ChargeBalance: true}
+	input := advancedChatCompletionInput{SessionID: newAdvancedChatID("pcw"), Title: "Personal Company: " + work.Title, ModelName: modelName, Messages: []advancedChatCompletionMessage{{Role: "user", Content: prompt}}, Mode: mode, AgentID: agentID, AgentGroupID: agentGroupID, ConnectorDeviceID: policy.ConnectorDeviceID, ConnectorWorkspacePath: policy.ConnectorWorkspacePath, ConnectorApprovalMode: advancedChatConnectorApprovalManual, ConnectorCommandPrefixes: policy.ConnectorCommandPrefixes, ChargeBalance: true}
 	prepared, _, message, err := prepareAdvancedChatAssistantRun(context.Background(), userID, input, input.Messages, modelName)
 	if err != nil {
 		return model.CompanyWorkAttempt{}, "", errors.New(message)
@@ -458,9 +444,9 @@ func startPersonalCompanyReviewRun(company model.PersonalCompany, userID, workIt
 	}
 	policy := personalCompanyRuntimePolicy{}
 	_ = json.Unmarshal([]byte(company.ConnectorCommandPrefixes), &policy.ConnectorCommandPrefixes)
-	policy.ConnectorDeviceID, policy.ConnectorWorkspacePath, policy.CloudSandboxID = company.ConnectorDeviceID, company.ConnectorWorkspacePath, company.CloudSandboxID
+	policy.ConnectorDeviceID, policy.ConnectorWorkspacePath = company.ConnectorDeviceID, company.ConnectorWorkspacePath
 	prompt := fmt.Sprintf("You are the Chief scheduling a mandatory review for governed Personal Company work item #%d.\nTitle: %s\nDefinition of done: %s\nExecution result: %s\n\nDelegate the evidence and result inspection to a reviewer member. After the reviewer returns, call studio_review_work with its decision. Do not execute workspace actions yourself.", work.ID, work.Title, work.DefinitionOfDone, truncatePersonalCompanyText(completed.ResultSummary, 4000))
-	input := advancedChatCompletionInput{SessionID: newAdvancedChatID("pcw"), Title: "Personal Company Review: " + work.Title, Messages: []advancedChatCompletionMessage{{Role: "user", Content: prompt}}, Mode: advancedChatModeAgentGroup, AgentGroupID: company.AgentGroupID, ConnectorDeviceID: policy.ConnectorDeviceID, ConnectorWorkspacePath: policy.ConnectorWorkspacePath, CloudSandboxID: policy.CloudSandboxID, ConnectorApprovalMode: advancedChatConnectorApprovalManual, ConnectorCommandPrefixes: policy.ConnectorCommandPrefixes, ChargeBalance: true}
+	input := advancedChatCompletionInput{SessionID: newAdvancedChatID("pcw"), Title: "Personal Company Review: " + work.Title, Messages: []advancedChatCompletionMessage{{Role: "user", Content: prompt}}, Mode: advancedChatModeAgentGroup, AgentGroupID: company.AgentGroupID, ConnectorDeviceID: policy.ConnectorDeviceID, ConnectorWorkspacePath: policy.ConnectorWorkspacePath, ConnectorApprovalMode: advancedChatConnectorApprovalManual, ConnectorCommandPrefixes: policy.ConnectorCommandPrefixes, ChargeBalance: true}
 	prepared, _, message, err := prepareAdvancedChatAssistantRun(context.Background(), userID, input, input.Messages, "")
 	if err != nil {
 		return model.CompanyWorkAttempt{}, "", errors.New(message)

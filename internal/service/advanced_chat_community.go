@@ -4,8 +4,8 @@ import (
 	"context"
 	"net/http"
 
-	"github.com/veloce-ailab/veloce/internal/model"
 	"github.com/gin-gonic/gin"
+	"github.com/veloce-ailab/veloce/internal/model"
 )
 
 func InitCommunityAdvancedChatFeatures() error {
@@ -32,9 +32,6 @@ func InitCommunityAdvancedChatFeatures() error {
 		&AdvancedChatKnowledgeChunk{},
 		&AdvancedChatConnectorDevice{},
 		&AdvancedChatConnectorTask{},
-		&AdvancedChatCloudSandboxHost{},
-		&AdvancedChatCloudSandbox{},
-		&AdvancedChatCloudSandboxCharge{},
 		&AdvancedChatStaticSite{},
 	)
 	if err == nil {

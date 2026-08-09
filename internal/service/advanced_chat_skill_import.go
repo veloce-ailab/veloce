@@ -10,14 +10,7 @@ import (
 	"time"
 
 	"github.com/gin-gonic/gin"
-	"github.com/veloce-ailab/veloce/internal/model"
 )
-
-// CommunityFeatureEnabled 社区功能总开关（后台可关闭，默认开启）。
-// 关闭后社区浏览代理与社区导入接口全部不可用。
-func CommunityFeatureEnabled() bool {
-	return model.GetSystemSetting("community_enabled", "true") != "false"
-}
 
 // communitySkillPayload 社区技能详情：content 为 SKILL.md 全文
 type communitySkillPayload struct {
@@ -33,10 +26,6 @@ func (api *advancedChatAPI) importCommunitySkill(c *gin.Context) {
 	user, ok := currentAdvancedChatUser(c)
 	if !ok {
 		c.JSON(http.StatusUnauthorized, gin.H{"error": "Unauthorized"})
-		return
-	}
-	if !CommunityFeatureEnabled() {
-		c.JSON(http.StatusForbidden, gin.H{"error": "Community is disabled"})
 		return
 	}
 	if !advancedChatFileStorageEnabled() {

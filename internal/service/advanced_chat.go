@@ -9,8 +9,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/veloce-ailab/veloce/internal/model"
 	"github.com/gin-gonic/gin"
+	"github.com/veloce-ailab/veloce/internal/model"
 	"gorm.io/gorm"
 )
 
@@ -294,9 +294,6 @@ func initAdvancedChatFeatures() error {
 		&AdvancedChatKnowledgeChunk{},
 		&AdvancedChatConnectorDevice{},
 		&AdvancedChatConnectorTask{},
-		&AdvancedChatCloudSandboxHost{},
-		&AdvancedChatCloudSandbox{},
-		&AdvancedChatCloudSandboxCharge{},
 		&AdvancedChatStaticSite{},
 		&AdvancedChatDelivery{},
 		&AdvancedChatScheduledTask{},

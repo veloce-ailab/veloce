@@ -13,6 +13,9 @@ func RemoveOnlineChatSchema(db *gorm.DB) error {
 	chatTables := []string{
 		// Drop dependent tables before their referenced parents so this works
 		// with PostgreSQL and MySQL foreign-key enforcement as well as SQLite.
+		"advanced_chat_cloud_sandbox_charges",
+		"advanced_chat_cloud_sandboxes",
+		"advanced_chat_cloud_sandbox_hosts",
 		"advanced_chat_static_sites",
 		"advanced_chat_packaged_skills",
 		"advanced_chat_agent_studios",
@@ -55,6 +58,7 @@ func RemoveOnlineChatSchema(db *gorm.DB) error {
 	}{
 		{model: &PersonalCompanyEmployee{}, table: "personal_company_employees", name: "advanced_chat_agent_id"},
 		{model: &CompanyWorkAttempt{}, table: "company_work_attempts", name: "advanced_chat_run_id"},
+		{model: &PersonalCompany{}, table: "personal_companies", name: "cloud_sandbox_id"},
 	} {
 		if db.Migrator().HasTable(column.table) && db.Migrator().HasColumn(column.table, column.name) {
 			if err := db.Migrator().DropColumn(column.model, column.name); err != nil {
@@ -65,6 +69,7 @@ func RemoveOnlineChatSchema(db *gorm.DB) error {
 
 	return db.Where("key LIKE ? OR key IN ?", "advanced_chat_%", []string{
 		"chat_page_mode",
+		"community_enabled",
 		"sidebar_chat_enabled",
 	}).Delete(&SystemSetting{}).Error
 }

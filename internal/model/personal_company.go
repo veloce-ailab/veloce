@@ -38,7 +38,6 @@ type PersonalCompany struct {
 	AgentGroupID             string          `gorm:"uniqueIndex:idx_personal_company_studio;size:80;index;not null;default:''" json:"agent_group_id,omitempty"`
 	ConnectorDeviceID        string          `gorm:"size:80;not null;default:''" json:"connector_device_id,omitempty"`
 	ConnectorWorkspacePath   string          `gorm:"type:text;not null;default:''" json:"connector_workspace_path,omitempty"`
-	CloudSandboxID           string          `gorm:"size:80;not null;default:'';index" json:"cloud_sandbox_id,omitempty"`
 	ConnectorCommandPrefixes string          `gorm:"type:text;not null;default:'[]'" json:"connector_command_prefixes,omitempty"`
 	MaxConcurrentTasks       int             `gorm:"not null;default:1" json:"max_concurrent_tasks"`
 	PausedAt                 *time.Time      `gorm:"index" json:"paused_at,omitempty"`

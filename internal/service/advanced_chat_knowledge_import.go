@@ -11,8 +11,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/veloce-ailab/veloce/internal/model"
 	"github.com/gin-gonic/gin"
+	"github.com/veloce-ailab/veloce/internal/model"
 )
 
 const (
@@ -43,10 +43,6 @@ func (api *advancedChatAPI) importCommunityKnowledgeBase(c *gin.Context) {
 	user, ok := currentAdvancedChatUser(c)
 	if !ok {
 		c.JSON(http.StatusUnauthorized, gin.H{"error": "Unauthorized"})
-		return
-	}
-	if !CommunityFeatureEnabled() {
-		c.JSON(http.StatusForbidden, gin.H{"error": "Community is disabled"})
 		return
 	}
 	if !advancedChatFileStorageEnabled() {

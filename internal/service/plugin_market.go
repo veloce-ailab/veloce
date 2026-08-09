@@ -51,10 +51,6 @@ func (api *pluginAPI) listPluginMarket(c *gin.Context) {
 	if !requirePluginAdmin(c, user) {
 		return
 	}
-	if !CommunityFeatureEnabled() {
-		c.JSON(http.StatusForbidden, gin.H{"error": "Community is disabled"})
-		return
-	}
 	query := strings.TrimSpace(c.Query("q"))
 	if len([]rune(query)) > 100 {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "Search query is too long"})
@@ -83,10 +79,6 @@ func (api *pluginAPI) installPluginFromMarket(c *gin.Context) {
 		return
 	}
 	if !requirePluginAdmin(c, user) {
-		return
-	}
-	if !CommunityFeatureEnabled() {
-		c.JSON(http.StatusForbidden, gin.H{"error": "Community is disabled"})
 		return
 	}
 	id := strings.TrimSpace(c.Param("id"))

@@ -66,9 +66,6 @@ func Run() error {
 		return err
 	}
 	service.StartNodeHeartbeat()
-	if err := service.InitCloudSandboxFeatures(); err != nil {
-		return err
-	}
 	if err := messagechannel.InitFeatures(); err != nil {
 		return err
 	}
@@ -864,7 +861,6 @@ func Run() error {
 		admin.GET("/audit-logs", statsAPI.GetAuditLogs)
 		admin.GET("/stats", statsAPI.GetDashboardStats)
 		admin.GET("/channel-usage", statsAPI.GetChannelUsage)
-		service.RegisterCloudSandboxAdminRoutes(admin)
 		messagechannel.RegisterAdminRoutes(admin)
 		service.ApplyAdminRouteHooks(admin)
 	}
@@ -1030,7 +1026,6 @@ func Run() error {
 		userGroup.POST("/enterprise/user-budgets", middleware.PermissionMiddleware("cost.user_grant"), enterpriseAPI.GrantOrganizationBudgetToUser)
 		userGroup.GET("/enterprise/quota-ledger", middleware.PermissionMiddleware("cost.read"), enterpriseAPI.ListQuotaLedger)
 		service.RegisterPersonalCompanyUserRoutes(userGroup)
-		service.RegisterCloudSandboxUserRoutes(userGroup)
 		messagechannel.RegisterUserRoutes(userGroup)
 		service.ApplyUserRouteHooks(userGroup)
 	}

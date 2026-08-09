@@ -10,7 +10,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"log"
 	"net/http"
 	"path"
 	"strconv"
@@ -384,7 +383,6 @@ type advancedChatConnectorToolBinding struct {
 	DeviceID        string
 	DeviceName      string
 	WorkspacePath   string
-	CloudSandboxID  string
 	Action          string
 	AutoApprove     bool
 	ApprovalMode    string
@@ -1208,7 +1206,6 @@ func (api *advancedChatAPI) connectorRegister(c *gin.Context) {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to register connector"})
 		return
 	}
-	syncCloudSandboxHostHeartbeat(device.ID, now)
 	if err := model.DB.Where("id = ? AND user_id = ?", device.ID, device.UserID).First(device).Error; err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to load connector"})
 		return
@@ -1229,7 +1226,6 @@ func (api *advancedChatAPI) connectorHeartbeat(c *gin.Context) {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to update connector"})
 		return
 	}
-	syncCloudSandboxHostHeartbeat(device.ID, now)
 	c.JSON(http.StatusOK, gin.H{"ok": true, "device_id": device.ID})
 }
 
@@ -1283,9 +1279,7 @@ func (api *advancedChatAPI) connectorTaskResult(c *gin.Context) {
 	errMessage := normalizeConnectorTaskErrorMessage(input)
 	query := model.DB.Model(&AdvancedChatConnectorTask{}).
 		Where("id = ? AND device_id = ? AND status = ?", c.Param("id"), device.ID, advancedChatConnectorTaskStatusRunning)
-	if normalizeAdvancedChatConnectorMode(device.Mode) != advancedChatConnectorModeSandboxd {
-		query = query.Where("user_id = ?", device.UserID)
-	}
+	query = query.Where("user_id = ?", device.UserID)
 	update := query.
 		Updates(map[string]interface{}{
 			"status":        status,
@@ -1303,11 +1297,6 @@ func (api *advancedChatAPI) connectorTaskResult(c *gin.Context) {
 		return
 	}
 	notifyAdvancedChatConnectorSignal(advancedChatConnectorTaskSignalKey(c.Param("id")))
-	if normalizeAdvancedChatConnectorMode(device.Mode) == advancedChatConnectorModeSandboxd {
-		if err := recordCloudSandboxTaskCharge(c.Param("id"), now); err != nil {
-			log.Printf("cloud sandbox billing failed for task %s: %v", c.Param("id"), err)
-		}
-	}
 	c.JSON(http.StatusOK, gin.H{"ok": true})
 }
 
@@ -1358,13 +1347,7 @@ func claimAdvancedChatConnectorTask(userID uint, deviceID string) (*AdvancedChat
 	var task AdvancedChatConnectorTask
 	err := model.DB.Transaction(func(tx *gorm.DB) error {
 		query := tx.Where("device_id = ? AND status = ?", deviceID, advancedChatConnectorTaskStatusQueued)
-		var device AdvancedChatConnectorDevice
-		if err := tx.Select("mode").Where("id = ?", deviceID).First(&device).Error; err != nil {
-			return err
-		}
-		if normalizeAdvancedChatConnectorMode(device.Mode) != advancedChatConnectorModeSandboxd {
-			query = query.Where("user_id = ?", userID)
-		}
+		query = query.Where("user_id = ?", userID)
 		if err := query.
 			Order("created_at ASC").
 			Limit(1).
@@ -1590,10 +1573,6 @@ func advancedChatConnectorTools(device *AdvancedChatConnectorDevice, workspacePa
 }
 
 func advancedChatConnectorToolsWithApprovalMode(device *AdvancedChatConnectorDevice, workspacePath string, approvalMode string, commandPrefixes []string) ([]ChatExecutorTool, map[string]advancedChatConnectorToolBinding) {
-	return advancedChatConnectorToolsWithApprovalModeAndSandbox(device, workspacePath, approvalMode, commandPrefixes, "")
-}
-
-func advancedChatConnectorToolsWithApprovalModeAndSandbox(device *AdvancedChatConnectorDevice, workspacePath string, approvalMode string, commandPrefixes []string, cloudSandboxID string) ([]ChatExecutorTool, map[string]advancedChatConnectorToolBinding) {
 	if device == nil {
 		return nil, nil
 	}
@@ -1609,7 +1588,6 @@ func advancedChatConnectorToolsWithApprovalModeAndSandbox(device *AdvancedChatCo
 			DeviceID:        device.ID,
 			DeviceName:      device.Name,
 			WorkspacePath:   workspacePath,
-			CloudSandboxID:  cloudSandboxID,
 			Action:          action,
 			AutoApprove:     approvalMode == advancedChatConnectorApprovalFullAccess,
 			ApprovalMode:    approvalMode,
@@ -1847,13 +1825,6 @@ func callAdvancedChatConnectorTool(ctx context.Context, userID uint, runID strin
 func createAdvancedChatConnectorTask(userID uint, runID string, binding advancedChatConnectorToolBinding, arguments map[string]interface{}) (AdvancedChatConnectorTask, error) {
 	if isAdvancedChatStaticSiteControlAction(binding.Action) {
 		return createAdvancedChatStaticSiteToolTask(userID, runID, binding, arguments)
-	}
-	if strings.TrimSpace(binding.CloudSandboxID) != "" {
-		var err error
-		arguments, err = cloudSandboxTaskArguments(userID, binding.CloudSandboxID, arguments)
-		if err != nil {
-			return AdvancedChatConnectorTask{}, err
-		}
 	}
 	payload, err := json.Marshal(arguments)
 	if err != nil {
@@ -2327,8 +2298,6 @@ func normalizeAdvancedChatConnectorMode(value string) string {
 	switch strings.ToLower(strings.TrimSpace(value)) {
 	case advancedChatConnectorModeWebServer:
 		return advancedChatConnectorModeWebServer
-	case advancedChatConnectorModeSandboxd:
-		return advancedChatConnectorModeSandboxd
 	default:
 		return advancedChatConnectorModePlatform
 	}
