@@ -42,26 +42,27 @@ func RemoveOnlineChatSchema(db *gorm.DB) error {
 		"enterprise_shared_files",
 		"enterprise_shared_sessions",
 		"enterprise_shared_pools",
+		"company_outbox_events",
+		"company_signals",
+		"company_audit_events",
+		"company_budget_ledgers",
+		"company_approval_requests",
+		"company_handoff_packages",
+		"company_artifacts",
+		"company_work_attempts",
+		"company_work_items",
+		"company_objectives",
+		"company_recruitment_plans",
+		"company_capability_evidences",
+		"company_employee_versions",
+		"company_role_templates",
+		"personal_company_employees",
+		"company_charter_revisions",
+		"personal_companies",
 	}
 	for _, table := range chatTables {
 		if db.Migrator().HasTable(table) {
 			if err := db.Migrator().DropTable(table); err != nil {
-				return err
-			}
-		}
-	}
-
-	for _, column := range []struct {
-		model interface{}
-		table string
-		name  string
-	}{
-		{model: &PersonalCompanyEmployee{}, table: "personal_company_employees", name: "advanced_chat_agent_id"},
-		{model: &CompanyWorkAttempt{}, table: "company_work_attempts", name: "advanced_chat_run_id"},
-		{model: &PersonalCompany{}, table: "personal_companies", name: "cloud_sandbox_id"},
-	} {
-		if db.Migrator().HasTable(column.table) && db.Migrator().HasColumn(column.table, column.name) {
-			if err := db.Migrator().DropColumn(column.model, column.name); err != nil {
 				return err
 			}
 		}

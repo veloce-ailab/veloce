@@ -18,10 +18,6 @@ var ErrInsufficientBalance = errors.New("insufficient balance")
 type StartupHook func() error
 type RouteHook func(*gin.RouterGroup)
 type GeneratedAssetHook func(context.Context, GeneratedAssetInput)
-type AdvancedChatStorageUsageHook func(userID uint) int64
-type AdvancedChatStorageUsageWithDBHook func(db *gorm.DB, userID uint) (int64, error)
-type AdvancedChatRuntimeExtensionHook func(context.Context, AdvancedChatRuntimeContext) (AdvancedChatRuntimeExtension, error)
-type AdvancedChatToolHandler func(context.Context, AdvancedChatToolCallInput) (string, error)
 
 type MetaModelResolveInput struct {
 	ModelName    string
@@ -62,43 +58,11 @@ type GeneratedAssetInput struct {
 	Source       string
 }
 
-type AdvancedChatRuntimeContext struct {
-	UserID       uint
-	Mode         string
-	AgentID      string
-	AgentGroupID string
-	SessionID    string
-	RunID        string
-	// DisabledToolGroups lists per-session feature groups the user turned off;
-	// extension hooks should skip their tools and prompts when their group is listed.
-	DisabledToolGroups []string
-}
-
-type AdvancedChatRuntimeExtension struct {
-	SystemPrompt string
-	Tools        []ChatExecutorTool
-}
-
-type AdvancedChatToolCallInput struct {
-	UserID       uint
-	Mode         string
-	AgentID      string
-	AgentGroupID string
-	SessionID    string
-	RunID        string
-	Name         string
-	Arguments    map[string]interface{}
-}
-
 var startupHooks []StartupHook
 var publicAPIRouteHooks []RouteHook
 var adminRouteHooks []RouteHook
 var userRouteHooks []RouteHook
 var generatedAssetHook GeneratedAssetHook
-var advancedChatStorageUsageHooks []AdvancedChatStorageUsageHook
-var advancedChatStorageUsageWithDBHooks []AdvancedChatStorageUsageWithDBHook
-var advancedChatRuntimeExtensionHooks []AdvancedChatRuntimeExtensionHook
-var advancedChatToolHandlers = map[string]AdvancedChatToolHandler{}
 
 func RegisterStartupHook(hook StartupHook) {
 	startupHooks = append(startupHooks, hook)
@@ -156,33 +120,6 @@ func RegisterGeneratedAssetHook(hook GeneratedAssetHook) {
 	generatedAssetHook = hook
 }
 
-func RegisterAdvancedChatStorageUsageHook(hook AdvancedChatStorageUsageHook) {
-	if hook != nil {
-		advancedChatStorageUsageHooks = append(advancedChatStorageUsageHooks, hook)
-	}
-}
-
-// RegisterAdvancedChatStorageUsageWithDBHook lets extensions include their
-// storage usage while reusing the caller's transaction connection.
-func RegisterAdvancedChatStorageUsageWithDBHook(hook AdvancedChatStorageUsageWithDBHook) {
-	if hook != nil {
-		advancedChatStorageUsageWithDBHooks = append(advancedChatStorageUsageWithDBHooks, hook)
-	}
-}
-
-func RegisterAdvancedChatRuntimeExtensionHook(hook AdvancedChatRuntimeExtensionHook) {
-	if hook != nil {
-		advancedChatRuntimeExtensionHooks = append(advancedChatRuntimeExtensionHooks, hook)
-	}
-}
-
-func RegisterAdvancedChatToolHandler(name string, handler AdvancedChatToolHandler) {
-	if name == "" || handler == nil {
-		return
-	}
-	advancedChatToolHandlers[name] = handler
-}
-
 func ListMetaModelNames(c *gin.Context) ([]string, error) {
 	return ListMetaModelNamesForRequest(c)
 }
@@ -196,73 +133,6 @@ func ApplyGeneratedAssetHook(ctx context.Context, input GeneratedAssetInput) {
 		return
 	}
 	generatedAssetHook(ctx, input)
-}
-
-func ApplyAdvancedChatStorageUsageHooks(userID uint) int64 {
-	var total int64
-	for _, hook := range advancedChatStorageUsageHooks {
-		if hook == nil {
-			continue
-		}
-		if used := hook(userID); used > 0 {
-			total += used
-		}
-	}
-	return total
-}
-
-func ApplyAdvancedChatStorageUsageWithDBHooks(db *gorm.DB, userID uint) (int64, error) {
-	var total int64
-	for _, hook := range advancedChatStorageUsageWithDBHooks {
-		if hook == nil {
-			continue
-		}
-		used, err := hook(db, userID)
-		if err != nil {
-			return 0, err
-		}
-		if used > 0 {
-			total += used
-		}
-	}
-	return total, nil
-}
-
-func BuildAdvancedChatRuntimeExtension(ctx context.Context, input AdvancedChatRuntimeContext) (AdvancedChatRuntimeExtension, error) {
-	var result AdvancedChatRuntimeExtension
-	for _, hook := range advancedChatRuntimeExtensionHooks {
-		if hook == nil {
-			continue
-		}
-		next, err := hook(ctx, input)
-		if err != nil {
-			return result, err
-		}
-		if next.SystemPrompt != "" {
-			if result.SystemPrompt == "" {
-				result.SystemPrompt = next.SystemPrompt
-			} else {
-				result.SystemPrompt += "\n\n" + next.SystemPrompt
-			}
-		}
-		result.Tools = append(result.Tools, next.Tools...)
-	}
-	return result, nil
-}
-
-func AdvancedChatToolHandlerExists(name string) bool {
-	if _, ok := advancedChatToolHandlers[name]; ok {
-		return true
-	}
-	return pluginAdvancedChatToolExists(name)
-}
-
-func HandleAdvancedChatToolCall(ctx context.Context, input AdvancedChatToolCallInput) (string, error) {
-	handler, ok := advancedChatToolHandlers[input.Name]
-	if !ok {
-		return handlePluginAdvancedChatToolCall(ctx, input)
-	}
-	return handler(ctx, input)
 }
 
 func ResolveMetaModel(c *gin.Context, input MetaModelResolveInput) (MetaModelResolveResult, error) {

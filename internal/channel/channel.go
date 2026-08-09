@@ -12,9 +12,9 @@ import (
 	"strings"
 	"time"
 
+	"github.com/gin-gonic/gin"
 	"github.com/veloce-ailab/veloce/internal/model"
 	communityservice "github.com/veloce-ailab/veloce/internal/service"
-	"github.com/gin-gonic/gin"
 	"gorm.io/gorm"
 )
 
@@ -849,54 +849,9 @@ func (config resolvedMessageConfig) systemPrompt(fallback string) string {
 
 func buildSystemPrompt(userID uint, config resolvedMessageConfig, fallback string) string {
 	parts := []string{}
-	agentKey := strings.TrimSpace(config.AgentKey)
-	if agentKey != "" || config.AgentID != nil {
-		var agent struct {
-			Name   string
-			Prompt string
-		}
-		query := model.DB.Table("advanced_chat_agents").Select("name, prompt").Where("user_id = ?", userID)
-		if agentKey == "default" {
-			query = query.Where("stable_id = ?", agentKey)
-		} else if agentKey != "" {
-			if id, err := strconv.ParseUint(agentKey, 10, 64); err == nil && id > 0 {
-				query = query.Where("id = ?", uint(id))
-			} else {
-				query = query.Where("stable_id = ?", agentKey)
-			}
-		} else {
-			query = query.Where("id = ?", *config.AgentID)
-		}
-		if err := query.First(&agent).Error; err == nil && strings.TrimSpace(agent.Prompt) != "" {
-			parts = append(parts, strings.TrimSpace(agent.Prompt))
-		}
-	}
 	base := strings.TrimSpace(config.systemPrompt(fallback))
 	if base != "" {
 		parts = append(parts, base)
-	}
-	for _, skillID := range config.SkillIDs {
-		var skill struct {
-			ID          string
-			Name        string
-			Description string
-			Source      string
-		}
-		if err := model.DB.Table("advanced_chat_packaged_skills").
-			Select("id, name, description, source").
-			Where("id = ? AND user_id = ? AND enabled = ?", skillID, userID, true).
-			First(&skill).Error; err != nil {
-			continue
-		}
-		label := strings.TrimSpace(skill.Name)
-		if label == "" {
-			label = strings.TrimSpace(skill.ID)
-		}
-		description := strings.TrimSpace(skill.Description)
-		if description == "" {
-			description = "No description."
-		}
-		parts = append(parts, "Available Skill: "+label+"\nID: "+strings.TrimSpace(skill.ID)+"\nDescription: "+description)
 	}
 	return strings.Join(parts, "\n\n")
 }

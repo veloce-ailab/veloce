@@ -97,23 +97,6 @@ func InitDB() {
 		&PluginKV{},
 		&Ticket{},
 		&TicketMessage{},
-		&PersonalCompany{},
-		&CompanyCharterRevision{},
-		&PersonalCompanyEmployee{},
-		&CompanyRoleTemplate{},
-		&CompanyEmployeeVersion{},
-		&CompanyCapabilityEvidence{},
-		&CompanyRecruitmentPlan{},
-		&CompanyObjective{},
-		&CompanyWorkItem{},
-		&CompanyWorkAttempt{},
-		&CompanyArtifact{},
-		&CompanyHandoffPackage{},
-		&CompanyApprovalRequest{},
-		&CompanyBudgetLedger{},
-		&CompanyAuditEvent{},
-		&CompanySignal{},
-		&CompanyOutboxEvent{},
 	)
 	if err != nil {
 		log.Fatalf("failed to migrate database: %v", err)
@@ -125,13 +108,6 @@ func InitDB() {
 			"price_sync_cron":    "0 * * * *",
 		}).Error; err != nil {
 		log.Fatalf("failed to initialize channel price sync settings: %v", err)
-	}
-	// Studio operations are independently scoped by owner and Studio. Older
-	// PersonalCompany schemas used a single-column owner uniqueness constraint.
-	if DB.Migrator().HasIndex(&PersonalCompany{}, "idx_personal_companies_owner_user_id") {
-		if err := DB.Migrator().DropIndex(&PersonalCompany{}, "idx_personal_companies_owner_user_id"); err != nil {
-			log.Printf("failed to replace legacy personal company owner index: %v", err)
-		}
 	}
 	enterpriseModels := []interface{}{
 		&Organization{},

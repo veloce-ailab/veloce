@@ -34,12 +34,9 @@ func registerBuiltinFeatures() {
 	api.EnablePaymentFeature()
 	service.RegisterStartupHook(service.InitSubscriptionFeatures)
 	service.RegisterStartupHook(service.InitMetaModelFeatures)
-	service.RegisterStartupHook(service.InitMemoryFeatures)
 	service.RegisterAdminRouteHook(service.RegisterSubscriptionAdminRoutes)
 	service.RegisterAdminRouteHook(service.RegisterMetaModelAdminRoutes)
 	service.RegisterUserRouteHook(service.RegisterSubscriptionUserRoutes)
-	service.RegisterUserRouteHook(service.RegisterMemoryUserRoutes)
-	service.RegisterMemoryHooks()
 }
 
 func Run() error {
@@ -1025,7 +1022,6 @@ func Run() error {
 		userGroup.POST("/enterprise/pools/organization-budget/reclaim", middleware.PermissionMiddleware("cost.pool_reclaim"), enterpriseAPI.ReclaimPoolToOrganizationBudget)
 		userGroup.POST("/enterprise/user-budgets", middleware.PermissionMiddleware("cost.user_grant"), enterpriseAPI.GrantOrganizationBudgetToUser)
 		userGroup.GET("/enterprise/quota-ledger", middleware.PermissionMiddleware("cost.read"), enterpriseAPI.ListQuotaLedger)
-		service.RegisterPersonalCompanyUserRoutes(userGroup)
 		messagechannel.RegisterUserRoutes(userGroup)
 		service.ApplyUserRouteHooks(userGroup)
 	}

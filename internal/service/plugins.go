@@ -101,7 +101,6 @@ func init() {
 	RegisterStartupHook(loadPluginsOnStartup)
 	RegisterStartupHook(startPluginUpstreamRefresh)
 	RegisterUserRouteHook(registerPluginUserRoutes)
-	RegisterAdvancedChatRuntimeExtensionHook(pluginAdvancedChatRuntimeExtension)
 }
 
 func registerPluginUserRoutes(group *gin.RouterGroup) {

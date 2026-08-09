@@ -20,12 +20,14 @@ func TestRemoveOnlineChatSchema(t *testing.T) {
 		"CREATE TABLE advanced_chat_skill_packages (id text primary key)",
 		"CREATE TABLE advanced_chat_packaged_skills (id text primary key, package_id text REFERENCES advanced_chat_skill_packages(id))",
 		"CREATE TABLE enterprise_shared_pools (id integer primary key)",
+		"CREATE TABLE personal_companies (id integer primary key)",
+		"CREATE TABLE company_work_attempts (id integer primary key, personal_company_id integer REFERENCES personal_companies(id))",
 	} {
 		if err := db.Exec(statement).Error; err != nil {
 			t.Fatalf("prepare schema: %v", err)
 		}
 	}
-	if err := db.AutoMigrate(&SystemSetting{}, &PersonalCompanyEmployee{}, &CompanyWorkAttempt{}); err != nil {
+	if err := db.AutoMigrate(&SystemSetting{}); err != nil {
 		t.Fatalf("migrate models: %v", err)
 	}
 	if err := db.Create(&[]SystemSetting{
@@ -45,18 +47,10 @@ func TestRemoveOnlineChatSchema(t *testing.T) {
 		"advanced_chat_sessions", "advanced_chat_messages",
 		"advanced_chat_connector_devices", "advanced_chat_static_sites",
 		"advanced_chat_skill_packages", "advanced_chat_packaged_skills",
-		"enterprise_shared_pools",
+		"enterprise_shared_pools", "personal_companies", "company_work_attempts",
 	} {
 		if db.Migrator().HasTable(table) {
 			t.Errorf("table %q was not removed", table)
-		}
-	}
-	for _, column := range []struct{ table, name string }{
-		{table: "personal_company_employees", name: "advanced_chat_agent_id"},
-		{table: "company_work_attempts", name: "advanced_chat_run_id"},
-	} {
-		if db.Migrator().HasColumn(column.table, column.name) {
-			t.Errorf("column %s.%s was not removed", column.table, column.name)
 		}
 	}
 	var remaining []SystemSetting

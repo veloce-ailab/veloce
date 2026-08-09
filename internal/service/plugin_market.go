@@ -22,6 +22,10 @@ import (
 
 const communityPluginMarketAPIBaseURL = "https://veloce-community.flweb.cn/api/v1"
 
+const maxCommunityPluginResponseBytes = 10 << 20
+
+var communityPluginMarketHTTPClient = &http.Client{Timeout: 20 * time.Second}
+
 type communityPluginMarketItem struct {
 	ID            string `json:"id"`
 	Title         string `json:"title"`
@@ -116,7 +120,7 @@ func fetchCommunityPluginMarketJSON(ctx context.Context, endpoint string, output
 	if err != nil {
 		return err
 	}
-	resp, err := communityKnowledgeHTTPClient.Do(req)
+	resp, err := communityPluginMarketHTTPClient.Do(req)
 	if err != nil {
 		return err
 	}
@@ -124,7 +128,7 @@ func fetchCommunityPluginMarketJSON(ctx context.Context, endpoint string, output
 	if resp.StatusCode < http.StatusOK || resp.StatusCode >= http.StatusMultipleChoices {
 		return fmt.Errorf("community service returned HTTP %d", resp.StatusCode)
 	}
-	return json.NewDecoder(io.LimitReader(resp.Body, maxCommunityKnowledgeImport+1)).Decode(output)
+	return json.NewDecoder(io.LimitReader(resp.Body, maxCommunityPluginResponseBytes+1)).Decode(output)
 }
 
 func fetchCommunityPluginRelease(ctx context.Context, id string) (io.ReadCloser, string, error) {

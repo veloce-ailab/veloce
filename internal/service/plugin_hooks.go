@@ -4,25 +4,27 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"fmt"
 	"sort"
 	"strings"
 
-	"github.com/veloce-ailab/veloce/internal/model"
 	"github.com/gin-gonic/gin"
+	"github.com/veloce-ailab/veloce/internal/model"
 )
 
+func stringFromMap(values map[string]interface{}, key string) string {
+	value, _ := values[key].(string)
+	return strings.TrimSpace(value)
+}
+
 const (
-	PluginHookPointAppBoot                      = "app.boot"
-	PluginHookPointAdvancedChatRuntimeExtension = "advanced_chat.runtime_extension"
-	PluginHookPointAdvancedChatToolCall         = "advanced_chat.tool_call"
-	PluginHookPointPluginActionBefore           = "plugin.action.before"
-	PluginHookPointPluginActionAfter            = "plugin.action.after"
-	PluginHookPointPluginActionError            = "plugin.action.error"
-	PluginHookPointPluginSettingsUpdated        = "plugin.settings.updated"
-	PluginHookPointPluginEnabled                = "plugin.enabled"
-	PluginHookPointPluginDisabled               = "plugin.disabled"
-	PluginHookPointPluginInstalled              = "plugin.installed"
+	PluginHookPointAppBoot               = "app.boot"
+	PluginHookPointPluginActionBefore    = "plugin.action.before"
+	PluginHookPointPluginActionAfter     = "plugin.action.after"
+	PluginHookPointPluginActionError     = "plugin.action.error"
+	PluginHookPointPluginSettingsUpdated = "plugin.settings.updated"
+	PluginHookPointPluginEnabled         = "plugin.enabled"
+	PluginHookPointPluginDisabled        = "plugin.disabled"
+	PluginHookPointPluginInstalled       = "plugin.installed"
 )
 
 type PluginHookInput struct {
@@ -64,73 +66,6 @@ func DispatchPluginHooks(ctx context.Context, input PluginHookInput) []PluginHoo
 		}
 	}
 	return results
-}
-
-func pluginAdvancedChatRuntimeExtension(ctx context.Context, input AdvancedChatRuntimeContext) (AdvancedChatRuntimeExtension, error) {
-	results := DispatchPluginHooks(ctx, PluginHookInput{
-		Point:  PluginHookPointAdvancedChatRuntimeExtension,
-		UserID: input.UserID,
-		Source: "advanced_chat",
-		Payload: map[string]interface{}{
-			"mode":           input.Mode,
-			"agent_id":       input.AgentID,
-			"agent_group_id": input.AgentGroupID,
-			"session_id":     input.SessionID,
-			"run_id":         input.RunID,
-		},
-	})
-	var extension AdvancedChatRuntimeExtension
-	for _, result := range results {
-		if prompt := stringFromMap(result.Output, "system_prompt"); prompt != "" {
-			if extension.SystemPrompt == "" {
-				extension.SystemPrompt = prompt
-			} else {
-				extension.SystemPrompt += "\n\n" + prompt
-			}
-		}
-		extension.Tools = append(extension.Tools, pluginHookTools(result.Output)...)
-	}
-	return extension, nil
-}
-
-func pluginAdvancedChatToolExists(name string) bool {
-	name = strings.TrimSpace(name)
-	if name == "" {
-		return false
-	}
-	return len(enabledPluginHooks(0, PluginHookPointAdvancedChatToolCall, name)) > 0
-}
-
-func handlePluginAdvancedChatToolCall(ctx context.Context, input AdvancedChatToolCallInput) (string, error) {
-	results := DispatchPluginHooks(ctx, PluginHookInput{
-		Point:  PluginHookPointAdvancedChatToolCall,
-		Action: input.Name,
-		UserID: input.UserID,
-		Source: "advanced_chat",
-		Payload: map[string]interface{}{
-			"mode":       input.Mode,
-			"agent_id":   input.AgentID,
-			"session_id": input.SessionID,
-			"run_id":     input.RunID,
-			"name":       input.Name,
-			"arguments":  input.Arguments,
-		},
-	})
-	if len(results) == 0 {
-		return "", fmt.Errorf("plugin tool handler not found: %s", input.Name)
-	}
-	for _, result := range results {
-		if text := stringFromMap(result.Output, "text"); text != "" {
-			return text, nil
-		}
-		if message := stringFromMap(result.Output, "message"); message != "" {
-			return message, nil
-		}
-		if result.Output != nil {
-			return mustJSON(result.Output), nil
-		}
-	}
-	return "", nil
 }
 
 type pluginHookEntry struct {
@@ -246,29 +181,4 @@ func pluginHookMatches(hook PluginHook, point string, action string) bool {
 
 func validPluginHookPointName(point string) bool {
 	return pluginHookPointPattern.MatchString(strings.TrimSpace(point))
-}
-
-func pluginHookTools(output map[string]interface{}) []ChatExecutorTool {
-	rawTools, ok := output["tools"].([]interface{})
-	if !ok {
-		return nil
-	}
-	tools := make([]ChatExecutorTool, 0, len(rawTools))
-	for _, raw := range rawTools {
-		item, ok := raw.(map[string]interface{})
-		if !ok {
-			continue
-		}
-		name := stringFromMap(item, "name")
-		description := stringFromMap(item, "description")
-		if name == "" || description == "" {
-			continue
-		}
-		schema, _ := item["schema"].(map[string]interface{})
-		if schema == nil {
-			schema = map[string]interface{}{"type": "object", "properties": map[string]interface{}{}}
-		}
-		tools = append(tools, ChatExecutorTool{Name: name, Description: description, Schema: schema})
-	}
-	return tools
 }
