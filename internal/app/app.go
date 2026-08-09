@@ -16,6 +16,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/gin-gonic/gin"
 	webui "github.com/veloce-ailab/veloce-web"
 	"github.com/veloce-ailab/veloce/internal/api"
 	"github.com/veloce-ailab/veloce/internal/cache"
@@ -24,7 +25,6 @@ import (
 	"github.com/veloce-ailab/veloce/internal/middleware"
 	"github.com/veloce-ailab/veloce/internal/model"
 	"github.com/veloce-ailab/veloce/internal/service"
-	"github.com/gin-gonic/gin"
 )
 
 // registerBuiltinFeatures wires the feature modules into the shared startup and
@@ -35,15 +35,10 @@ func registerBuiltinFeatures() {
 	service.RegisterStartupHook(service.InitSubscriptionFeatures)
 	service.RegisterStartupHook(service.InitMetaModelFeatures)
 	service.RegisterStartupHook(service.InitMemoryFeatures)
-	service.RegisterStartupHook(service.InitAdvancedChatFeatures)
 	service.RegisterAdminRouteHook(service.RegisterSubscriptionAdminRoutes)
 	service.RegisterAdminRouteHook(service.RegisterMetaModelAdminRoutes)
-	service.RegisterAdminRouteHook(service.RegisterAdvancedChatAdminRoutes)
-	service.RegisterPublicAPIRouteHook(service.RegisterAdvancedChatPublicRoutes)
 	service.RegisterUserRouteHook(service.RegisterSubscriptionUserRoutes)
-	service.RegisterUserRouteHook(service.RegisterAdvancedChatUserRoutes)
 	service.RegisterUserRouteHook(service.RegisterMemoryUserRoutes)
-	service.RegisterGeneratedAssetHook(service.ApplyAdvancedChatGeneratedAssetHook)
 	service.RegisterMemoryHooks()
 }
 
@@ -71,9 +66,6 @@ func Run() error {
 		return err
 	}
 	service.StartNodeHeartbeat()
-	if err := service.InitCommunityAdvancedChatFeatures(); err != nil {
-		return err
-	}
 	if err := service.InitCloudSandboxFeatures(); err != nil {
 		return err
 	}
@@ -872,7 +864,6 @@ func Run() error {
 		admin.GET("/audit-logs", statsAPI.GetAuditLogs)
 		admin.GET("/stats", statsAPI.GetDashboardStats)
 		admin.GET("/channel-usage", statsAPI.GetChannelUsage)
-		service.RegisterCommunityAdvancedChatAdminRoutes(admin)
 		service.RegisterCloudSandboxAdminRoutes(admin)
 		messagechannel.RegisterAdminRoutes(admin)
 		service.ApplyAdminRouteHooks(admin)
@@ -884,7 +875,6 @@ func Run() error {
 
 	// User Self APIs
 	publicAPI := r.Group("/api")
-	service.RegisterCommunityAdvancedChatPublicRoutes(publicAPI)
 	messagechannel.RegisterPublicRoutes(publicAPI)
 	service.ApplyPublicAPIRouteHooks(publicAPI)
 
@@ -1022,18 +1012,6 @@ func Run() error {
 		userGroup.DELETE("/enterprise/managed-tasks/:id/participants/:user_id", middleware.PermissionMiddleware("member.manage"), enterpriseAPI.DeleteTaskParticipant)
 		userGroup.POST("/enterprise/managed-tasks/:id/departments", middleware.PermissionMiddleware("member.manage"), enterpriseAPI.AddTaskDepartment)
 		userGroup.DELETE("/enterprise/managed-tasks/:id/departments/:department_id", middleware.PermissionMiddleware("member.manage"), enterpriseAPI.DeleteTaskDepartment)
-		userGroup.GET("/enterprise/shared-pools", enterpriseAPI.ListSharedPools)
-		userGroup.POST("/enterprise/shared-pools", middleware.PermissionMiddleware("member.manage"), enterpriseAPI.CreateSharedPool)
-		userGroup.GET("/enterprise/shared-pools/:id/sessions", enterpriseAPI.ListSharedPoolSessions)
-		userGroup.POST("/enterprise/shared-pools/:id/sessions/new", enterpriseAPI.CreateSharedPoolSession)
-		userGroup.GET("/enterprise/shared-pools/:id/devices", enterpriseAPI.ListSharedPoolDevices)
-		userGroup.GET("/enterprise/shared-pools/:id/sessions/:session_id", enterpriseAPI.GetSharedPoolSession)
-		userGroup.POST("/enterprise/shared-pools/:id/sessions/:session_id/messages", enterpriseAPI.AppendSharedPoolSessionMessage)
-		userGroup.POST("/enterprise/shared-pools/:id/sessions", enterpriseAPI.ShareSessionToPool)
-		userGroup.GET("/enterprise/shared-pools/:id/files", enterpriseAPI.ListSharedPoolFiles)
-		userGroup.GET("/enterprise/shared-pools/:id/files/:file_id/content", enterpriseAPI.GetSharedPoolFileContent)
-		userGroup.GET("/enterprise/shared-pools/:id/files/:file_id/download", enterpriseAPI.DownloadSharedPoolFile)
-		userGroup.POST("/enterprise/shared-pools/:id/files", enterpriseAPI.ShareFileToPool)
 		userGroup.GET("/enterprise/devices", middleware.PermissionMiddleware("tool.manage"), enterpriseAPI.ListDevices)
 		userGroup.POST("/enterprise/devices/connector-command", middleware.PermissionMiddleware("tool.manage"), enterpriseAPI.CreateConnectorCommand)
 		userGroup.POST("/enterprise/devices/:id/connector-command", middleware.PermissionMiddleware("tool.manage"), enterpriseAPI.RotateConnectorCommand)
@@ -1052,7 +1030,6 @@ func Run() error {
 		userGroup.POST("/enterprise/user-budgets", middleware.PermissionMiddleware("cost.user_grant"), enterpriseAPI.GrantOrganizationBudgetToUser)
 		userGroup.GET("/enterprise/quota-ledger", middleware.PermissionMiddleware("cost.read"), enterpriseAPI.ListQuotaLedger)
 		service.RegisterPersonalCompanyUserRoutes(userGroup)
-		service.RegisterCommunityAdvancedChatUserRoutes(userGroup)
 		service.RegisterCloudSandboxUserRoutes(userGroup)
 		messagechannel.RegisterUserRoutes(userGroup)
 		service.ApplyUserRouteHooks(userGroup)
