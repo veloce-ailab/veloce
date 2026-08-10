@@ -5228,7 +5228,7 @@ func (api *UserAPI) BulkAPIKeys(c *gin.Context) {
 
 func (api *UserAPI) List(c *gin.Context) {
 	var users []model.User
-	query := loadUserForResponse(0)
+	query := loadUserForResponse(0).Model(&model.User{})
 	if search := strings.TrimSpace(c.Query("search")); search != "" {
 		pattern := "%" + strings.ToLower(search) + "%"
 		if id, err := strconv.ParseUint(search, 10, 0); err == nil {
