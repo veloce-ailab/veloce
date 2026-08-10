@@ -296,7 +296,6 @@ func sqliteMigrationModels() []interface{} {
 		&User{}, &UserAvatar{}, &APIKey{}, &EmailVerificationCode{}, &PhoneVerificationCode{}, &OIDCBindRequest{}, &WebAuthnChallenge{}, &PasskeyCredential{}, &CheckInRecord{}, &PaymentOrder{}, &WalletTransaction{}, &WalletLimitUsage{},
 		&Group{}, &UserGroupMembership{}, &ChannelGroupMultiplier{}, &ModelGroupMultiplier{}, &ReferralCommissionLog{}, &UserChannel{}, &UserChannelGroupAccess{}, &UserChannelUserAccess{}, &Channel{}, &Model{}, &ModelConfig{},
 		&StatusMonitor{}, &Announcement{}, &SystemSetting{}, &ClusterNode{}, &VideoTask{}, &Plugin{}, &UserPluginState{}, &UserPluginConfig{}, &PluginKV{},
-		&Organization{}, &Department{}, &Workspace{}, &OrganizationMember{}, &WorkspaceMember{}, &Permission{}, &Role{}, &RolePermission{}, &RoleBinding{}, &DepartmentRoleBinding{}, &EnterpriseTask{}, &EnterpriseTaskAssignment{}, &EnterpriseTaskDepartment{}, &DepartmentMember{}, &EnterpriseSharedPool{}, &EnterpriseSharedSession{}, &EnterpriseSharedFile{}, &EnterpriseDevice{}, &EnterpriseDeviceAssignment{}, &QuotaAccount{}, &QuotaLedger{},
 	}
 
 	sqliteMigrationModelsMu.RLock()

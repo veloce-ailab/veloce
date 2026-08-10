@@ -109,40 +109,6 @@ func InitDB() {
 		}).Error; err != nil {
 		log.Fatalf("failed to initialize channel price sync settings: %v", err)
 	}
-	enterpriseModels := []interface{}{
-		&Organization{},
-		&Department{},
-		&Workspace{},
-		&OrganizationMember{},
-		&WorkspaceMember{},
-		&Permission{},
-		&Role{},
-		&RolePermission{},
-		&RoleBinding{},
-		&DepartmentRoleBinding{},
-		&EnterpriseTask{},
-		&EnterpriseTaskAssignment{},
-		&EnterpriseTaskDepartment{},
-		&DepartmentMember{},
-		&EnterpriseDevice{},
-		&EnterpriseDeviceAssignment{},
-		&QuotaAccount{},
-		&QuotaLedger{},
-	}
-	// A number of enterprise references use composite keys to keep every
-	// relation inside its organization. PostgreSQL requires the referenced
-	// unique index to exist before it accepts a self-referential foreign key,
-	// while AutoMigrate otherwise attempts both in one pass. SQLite rebuilds
-	// tables when adding foreign keys, so it must retain the normal one-pass
-	// migration behavior that creates those constraints inline.
-	if DB.Dialector.Name() != "sqlite" {
-		if err := autoMigrateWithoutForeignKeys(DB, enterpriseModels...); err != nil {
-			log.Fatalf("failed to prepare enterprise database models: %v", err)
-		}
-	}
-	if err := DB.AutoMigrate(enterpriseModels...); err != nil {
-		log.Fatalf("failed to migrate enterprise database models: %v", err)
-	}
 	if err := RemoveOnlineChatSchema(DB); err != nil {
 		log.Fatalf("failed to remove retired online chat schema: %v", err)
 	}
@@ -172,11 +138,6 @@ func InitDB() {
 	initData()
 	if err := InitLogDB(); err != nil {
 		log.Fatalf("failed to initialize log database: %v", err)
-	}
-	if EnterpriseModeEnabledWithDB(DB) {
-		if err := EnsureEnterpriseTenantForExistingUsers(DB); err != nil {
-			log.Fatalf("failed to initialize enterprise tenant: %v", err)
-		}
 	}
 }
 

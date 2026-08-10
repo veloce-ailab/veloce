@@ -8,24 +8,17 @@ import (
 )
 
 const (
-	SystemModeOperation  = "operation"
-	SystemModePersonal   = "personal"
-	SystemModeEnterprise = model.EnterpriseSystemMode
+	SystemModeOperation = "operation"
+	SystemModePersonal  = "personal"
 )
 
 func NormalizeSystemMode(value string) string {
 	switch strings.ToLower(strings.TrimSpace(value)) {
 	case SystemModePersonal:
 		return SystemModePersonal
-	case SystemModeEnterprise:
-		return SystemModeEnterprise
 	default:
 		return SystemModeOperation
 	}
-}
-
-func EnterpriseModeEnabled() bool {
-	return CurrentSystemMode() == SystemModeEnterprise
 }
 
 func CurrentSystemMode() string {

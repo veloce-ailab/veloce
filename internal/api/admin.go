@@ -158,7 +158,6 @@ type configurationModelConfig struct {
 type systemSettingsResponse struct {
 	Edition                              string `json:"edition"`
 	SystemMode                           string `json:"system_mode"`
-	EnterpriseFeaturesEnabled            bool   `json:"enterprise_features_enabled"`
 	SiteName                             string `json:"site_name"`
 	BaseURL                              string `json:"base_url"`
 	IconURL                              string `json:"icon_url"`
@@ -1017,17 +1016,9 @@ func (api *SystemAPI) UpdateSettings(c *gin.Context) {
 		}
 	}
 	if input.SystemMode != nil {
-		previousSystemMode := service.CurrentSystemMode()
 		if err := model.SetSystemSetting("system_mode", systemMode); err != nil {
 			c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to update system settings"})
 			return
-		}
-		if systemMode == service.SystemModeEnterprise {
-			if err := model.EnsureEnterpriseTenantForExistingUsers(model.DB); err != nil {
-				_ = model.SetSystemSetting("system_mode", previousSystemMode)
-				c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to initialize enterprise mode"})
-				return
-			}
 		}
 	}
 
@@ -1280,7 +1271,6 @@ func currentPublicSystemSettings() systemSettingsResponse {
 	return systemSettingsResponse{
 		Edition:                              service.CurrentEdition(),
 		SystemMode:                           service.CurrentSystemMode(),
-		EnterpriseFeaturesEnabled:            service.EnterpriseFeaturesEnabled(),
 		SiteName:                             settingString("site_name", "flai"),
 		BaseURL:                              settingString("base_url", ""),
 		IconURL:                              settingString("icon_url", ""),
