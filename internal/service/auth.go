@@ -14,10 +14,10 @@ import (
 	"sync"
 	"time"
 
-	"github.com/veloce-ailab/veloce/internal/config"
-	"github.com/veloce-ailab/veloce/internal/model"
 	"github.com/coreos/go-oidc/v3/oidc"
 	"github.com/golang-jwt/jwt/v5"
+	"github.com/veloce-ailab/veloce/internal/config"
+	"github.com/veloce-ailab/veloce/internal/model"
 	"golang.org/x/oauth2"
 	"gorm.io/gorm"
 )
@@ -247,6 +247,9 @@ func (s *AuthService) verifyOAuthClaims(ctx context.Context, providerKey string,
 func (s *AuthService) issueJWT(user *model.User) (string, error) {
 	if user == nil || user.ID == 0 {
 		return "", errors.New("user is required")
+	}
+	if user.IsDisabled {
+		return "", errors.New("account is disabled")
 	}
 	token := jwt.NewWithClaims(jwt.SigningMethodHS256, jwt.MapClaims{
 		"id":       user.ID,

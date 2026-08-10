@@ -25,6 +25,7 @@ type User struct {
 	ReferrerID    *uint                 `gorm:"index" json:"referrer_id,omitempty"`
 	Referrer      *User                 `gorm:"foreignKey:ReferrerID;references:ID" json:"referrer,omitempty"`
 	IsAdmin       bool                  `gorm:"default:false" json:"is_admin"`
+	IsDisabled    bool                  `gorm:"default:false" json:"is_disabled"`
 	CreatedAt     time.Time             `json:"created_at"`
 	UpdatedAt     time.Time             `json:"updated_at"`
 }

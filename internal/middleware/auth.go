@@ -5,9 +5,9 @@ import (
 	"net/http"
 	"strings"
 
+	"github.com/gin-gonic/gin"
 	"github.com/veloce-ailab/veloce/internal/model"
 	"github.com/veloce-ailab/veloce/internal/service"
-	"github.com/gin-gonic/gin"
 )
 
 func AuthMiddleware(authService *service.AuthService) gin.HandlerFunc {
@@ -54,6 +54,11 @@ func AuthMiddleware(authService *service.AuthService) gin.HandlerFunc {
 				c.Abort()
 				return
 			}
+		}
+		if user.IsDisabled {
+			c.JSON(http.StatusForbidden, gin.H{"error": "Account is disabled"})
+			c.Abort()
+			return
 		}
 
 		c.Set("user", &user)

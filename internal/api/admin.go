@@ -1,6 +1,7 @@
 package api
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"io"
@@ -13,8 +14,10 @@ import (
 
 	"github.com/gin-gonic/gin"
 	"github.com/shopspring/decimal"
+	"github.com/veloce-ailab/veloce/internal/cache"
 	"github.com/veloce-ailab/veloce/internal/model"
 	"github.com/veloce-ailab/veloce/internal/service"
+	"golang.org/x/crypto/bcrypt"
 	"gorm.io/gorm"
 	"gorm.io/gorm/clause"
 )
@@ -4788,6 +4791,158 @@ func (api *UserAPI) List(c *gin.Context) {
 	c.JSON(http.StatusOK, users)
 }
 
+func (api *UserAPI) Create(c *gin.Context) {
+	var input struct {
+		Username string          `json:"username"`
+		Email    string          `json:"email"`
+		Password string          `json:"password"`
+		GroupID  uint            `json:"group_id"`
+		Balance  decimal.Decimal `json:"balance"`
+		IsAdmin  bool            `json:"is_admin"`
+	}
+	if err := c.ShouldBindJSON(&input); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+
+	input.Username = strings.TrimSpace(input.Username)
+	input.Email = strings.ToLower(strings.TrimSpace(input.Email))
+	if len([]rune(input.Username)) < 3 || len([]rune(input.Username)) > 100 {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Username must be between 3 and 100 characters"})
+		return
+	}
+	if len(input.Email) > 100 || !strings.Contains(input.Email, "@") {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Valid email is required"})
+		return
+	}
+	if len(input.Password) < 8 {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Password must be at least 8 characters"})
+		return
+	}
+	if input.Balance.IsNegative() {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Initial balance cannot be negative"})
+		return
+	}
+
+	var group model.Group
+	var err error
+	if input.GroupID == 0 {
+		group, err = model.EnsureDefaultGroup()
+	} else {
+		err = model.DB.First(&group, input.GroupID).Error
+	}
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Group not found"})
+		return
+	}
+
+	var count int64
+	if err := model.DB.Model(&model.User{}).Where("username = ? OR email = ?", input.Username, input.Email).Count(&count).Error; err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	if count > 0 {
+		c.JSON(http.StatusConflict, gin.H{"error": "Username or email already exists"})
+		return
+	}
+
+	passwordHash, err := bcrypt.GenerateFromPassword([]byte(input.Password), bcrypt.DefaultCost)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to secure password"})
+		return
+	}
+	apiKey, _, err := service.GenerateAPIKey()
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to create API key"})
+		return
+	}
+	referralCode, err := model.NewUniqueReferralCode()
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to create referral code"})
+		return
+	}
+
+	user := model.User{Username: input.Username, Email: input.Email, PasswordHash: string(passwordHash), EmailVerified: true, Balance: input.Balance, GroupID: group.ID, APIKey: apiKey, ReferralCode: &referralCode, IsAdmin: input.IsAdmin}
+	if err := model.DB.Transaction(func(tx *gorm.DB) error {
+		if err := tx.Create(&user).Error; err != nil {
+			return err
+		}
+		return tx.Where(&model.UserGroupMembership{UserID: user.ID, GroupID: group.ID}).FirstOrCreate(&model.UserGroupMembership{UserID: user.ID, GroupID: group.ID}).Error
+	}); err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	cache.StoreUserBillingBalance(c.Request.Context(), user.ID, user.Balance)
+	if err := loadUserForResponse(user.ID).First(&user, user.ID).Error; err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "User created but failed to load response"})
+		return
+	}
+	c.JSON(http.StatusCreated, user)
+}
+
+func (api *UserAPI) Bulk(c *gin.Context) {
+	var input struct {
+		IDs    []uint          `json:"ids"`
+		Action string          `json:"action"`
+		Amount decimal.Decimal `json:"amount"`
+	}
+	if err := c.ShouldBindJSON(&input); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+	ids := uniqueUserIDs(input.IDs)
+	if len(ids) == 0 {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "At least one user is required"})
+		return
+	}
+	actor, ok := currentUser(c)
+	if !ok {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "Unauthorized"})
+		return
+	}
+	for _, id := range ids {
+		if id == actor.ID {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "You cannot bulk modify your own account"})
+			return
+		}
+	}
+	action := strings.ToLower(strings.TrimSpace(input.Action))
+	if action != "disable" && action != "enable" && action != "delete" && action != "adjust_balance" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid bulk action"})
+		return
+	}
+	if action == "adjust_balance" && input.Amount.IsZero() {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Balance adjustment cannot be zero"})
+		return
+	}
+
+	if err := model.DB.Transaction(func(tx *gorm.DB) error {
+		var count int64
+		if err := tx.Model(&model.User{}).Where("id IN ?", ids).Count(&count).Error; err != nil {
+			return err
+		}
+		if count != int64(len(ids)) {
+			return errors.New("one or more users do not exist")
+		}
+		switch action {
+		case "disable", "enable":
+			return tx.Model(&model.User{}).Where("id IN ?", ids).Update("is_disabled", action == "disable").Error
+		case "delete":
+			return tx.Where("id IN ?", ids).Delete(&model.User{}).Error
+		case "adjust_balance":
+			return tx.Model(&model.User{}).Where("id IN ?", ids).UpdateColumn("balance", gorm.Expr("CASE WHEN balance + ? < 0 THEN 0 ELSE balance + ? END", input.Amount, input.Amount)).Error
+		}
+		return nil
+	}); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+	for _, id := range ids {
+		cache.InvalidateUserBillingBalance(context.Background(), id)
+	}
+	c.JSON(http.StatusOK, gin.H{"updated": len(ids)})
+}
+
 func (api *UserAPI) Update(c *gin.Context) {
 	id := c.Param("id")
 	var user model.User
@@ -4797,9 +4952,10 @@ func (api *UserAPI) Update(c *gin.Context) {
 	}
 
 	var input struct {
-		Balance *decimal.Decimal `json:"balance"`
-		GroupID *uint            `json:"group_id"`
-		IsAdmin *bool            `json:"is_admin"`
+		Balance    *decimal.Decimal `json:"balance"`
+		GroupID    *uint            `json:"group_id"`
+		IsAdmin    *bool            `json:"is_admin"`
+		IsDisabled *bool            `json:"is_disabled"`
 	}
 	if err := c.ShouldBindJSON(&input); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
@@ -4824,6 +4980,9 @@ func (api *UserAPI) Update(c *gin.Context) {
 	}
 	if input.IsAdmin != nil {
 		updates["is_admin"] = *input.IsAdmin
+	}
+	if input.IsDisabled != nil {
+		updates["is_disabled"] = *input.IsDisabled
 	}
 	if len(updates) == 0 {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "No fields to update"})
@@ -4855,16 +5014,39 @@ func (api *UserAPI) Update(c *gin.Context) {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
 	}
+	if input.Balance != nil {
+		cache.InvalidateUserBillingBalance(c.Request.Context(), user.ID)
+	}
 	c.JSON(http.StatusOK, user)
 }
 
 func (api *UserAPI) Delete(c *gin.Context) {
 	id := c.Param("id")
+	if user, ok := currentUser(c); ok && strconv.FormatUint(uint64(user.ID), 10) == id {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "You cannot delete your own account"})
+		return
+	}
 	if err := model.DB.Delete(&model.User{}, id).Error; err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
 	}
 	c.JSON(http.StatusOK, gin.H{"message": "User deleted"})
+}
+
+func uniqueUserIDs(ids []uint) []uint {
+	seen := make(map[uint]struct{}, len(ids))
+	result := make([]uint, 0, len(ids))
+	for _, id := range ids {
+		if id == 0 {
+			continue
+		}
+		if _, exists := seen[id]; exists {
+			continue
+		}
+		seen[id] = struct{}{}
+		result = append(result, id)
+	}
+	return result
 }
 
 func loadUserForResponse(userID uint) *gorm.DB {

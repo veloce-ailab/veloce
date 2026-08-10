@@ -1,13 +1,68 @@
 package api
 
 import (
+	"bytes"
+	"net/http"
+	"net/http/httptest"
 	"testing"
 
+	"github.com/gin-gonic/gin"
 	"github.com/glebarez/sqlite"
 	"github.com/shopspring/decimal"
 	"github.com/veloce-ailab/veloce/internal/model"
 	"gorm.io/gorm"
 )
+
+func TestBulkUserActionsDisableAndAdjustBalance(t *testing.T) {
+	previousDB := model.DB
+	t.Cleanup(func() { model.DB = previousDB })
+	database, err := gorm.Open(sqlite.Open("file:bulk-user-actions-test?mode=memory&cache=shared"), &gorm.Config{})
+	if err != nil {
+		t.Fatalf("open test database: %v", err)
+	}
+	if err := database.AutoMigrate(&model.User{}); err != nil {
+		t.Fatalf("migrate user: %v", err)
+	}
+	model.DB = database
+
+	actor := model.User{Username: "admin", Email: "admin@example.com", IsAdmin: true}
+	target := model.User{Username: "member", Email: "member@example.com", Balance: decimal.NewFromInt(5)}
+	if err := database.Create(&actor).Error; err != nil {
+		t.Fatalf("create actor: %v", err)
+	}
+	if err := database.Create(&target).Error; err != nil {
+		t.Fatalf("create target: %v", err)
+	}
+
+	callBulkUserAction(t, actor, `{"ids":[2],"action":"disable"}`)
+	if err := database.First(&target, target.ID).Error; err != nil {
+		t.Fatalf("reload disabled target: %v", err)
+	}
+	if !target.IsDisabled {
+		t.Fatal("target should be disabled")
+	}
+
+	callBulkUserAction(t, actor, `{"ids":[2],"action":"adjust_balance","amount":-10}`)
+	if err := database.First(&target, target.ID).Error; err != nil {
+		t.Fatalf("reload adjusted target: %v", err)
+	}
+	if !target.Balance.IsZero() {
+		t.Fatalf("target balance = %s, want 0", target.Balance)
+	}
+}
+
+func callBulkUserAction(t *testing.T, actor model.User, body string) {
+	t.Helper()
+	recorder := httptest.NewRecorder()
+	context, _ := gin.CreateTestContext(recorder)
+	context.Request = httptest.NewRequest(http.MethodPost, "/api/users/bulk", bytes.NewBufferString(body))
+	context.Request.Header.Set("Content-Type", "application/json")
+	context.Set("user", &actor)
+	(&UserAPI{}).Bulk(context)
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("bulk action returned %d: %s", recorder.Code, recorder.Body.String())
+	}
+}
 
 func TestModelFromInputAllowsClearingProviderIcon(t *testing.T) {
 	existing := &model.Model{

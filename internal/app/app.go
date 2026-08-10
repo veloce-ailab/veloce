@@ -848,6 +848,8 @@ func Run() error {
 
 		// Users
 		admin.GET("/users", userAPI.List)
+		admin.POST("/users", userAPI.Create)
+		admin.POST("/users/bulk", userAPI.Bulk)
 		admin.PUT("/users/:id", userAPI.Update)
 		admin.DELETE("/users/:id", userAPI.Delete)
 		admin.GET("/referral-commissions", referralAPI.ListCommissions)
