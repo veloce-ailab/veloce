@@ -2203,12 +2203,133 @@ func (api *ChannelAPI) Update(c *gin.Context) {
 }
 
 func (api *ChannelAPI) Delete(c *gin.Context) {
-	id := c.Param("id")
-	if err := model.DB.Delete(&model.Channel{}, id).Error; err != nil {
+	id, err := strconv.ParseUint(c.Param("id"), 10, 0)
+	if err != nil || id == 0 {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid channel id"})
+		return
+	}
+	if err := model.DB.Transaction(func(tx *gorm.DB) error {
+		channelID := uint(id)
+		var configs []model.ModelConfig
+		if err := tx.Where("channel_id = ?", channelID).Find(&configs).Error; err != nil {
+			return err
+		}
+		configIDs := make([]uint, 0, len(configs))
+		for _, config := range configs {
+			configIDs = append(configIDs, config.ID)
+		}
+		if len(configIDs) > 0 {
+			if err := tx.Where("model_config_id IN ?", configIDs).Delete(&model.ModelGroupMultiplier{}).Error; err != nil {
+				return err
+			}
+			if err := tx.Where("id IN ?", configIDs).Delete(&model.ModelConfig{}).Error; err != nil {
+				return err
+			}
+		}
+		if err := tx.Where("channel_id = ?", channelID).Delete(&model.ChannelGroupMultiplier{}).Error; err != nil {
+			return err
+		}
+		return tx.Delete(&model.Channel{}, channelID).Error
+	}); err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
 	}
 	c.JSON(http.StatusOK, gin.H{"message": "Channel deleted"})
+}
+
+func (api *ChannelAPI) Bulk(c *gin.Context) {
+	var input struct {
+		IDs     []uint `json:"ids"`
+		Enabled *bool  `json:"enabled"`
+		Action  string `json:"action"`
+	}
+	if err := c.ShouldBindJSON(&input); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+	ids := uniquePositiveUintIDs(input.IDs)
+	if len(ids) == 0 {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "At least one channel is required"})
+		return
+	}
+	action := strings.ToLower(strings.TrimSpace(input.Action))
+	if action == "delete" {
+		if err := model.DB.Transaction(func(tx *gorm.DB) error {
+			var channels []model.Channel
+			if err := tx.Where("id IN ?", ids).Find(&channels).Error; err != nil {
+				return err
+			}
+			if len(channels) != len(ids) {
+				return errors.New("one or more channels do not exist")
+			}
+			for _, channel := range channels {
+				var configs []model.ModelConfig
+				if err := tx.Where("channel_id = ?", channel.ID).Find(&configs).Error; err != nil {
+					return err
+				}
+				configIDs := make([]uint, 0, len(configs))
+				for _, config := range configs {
+					configIDs = append(configIDs, config.ID)
+				}
+				if len(configIDs) > 0 {
+					if err := tx.Where("model_config_id IN ?", configIDs).Delete(&model.ModelGroupMultiplier{}).Error; err != nil {
+						return err
+					}
+					if err := tx.Where("id IN ?", configIDs).Delete(&model.ModelConfig{}).Error; err != nil {
+						return err
+					}
+				}
+				if err := tx.Where("channel_id = ?", channel.ID).Delete(&model.ChannelGroupMultiplier{}).Error; err != nil {
+					return err
+				}
+				if err := tx.Delete(&model.Channel{}, channel.ID).Error; err != nil {
+					return err
+				}
+			}
+			return nil
+		}); err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+			return
+		}
+		c.JSON(http.StatusOK, gin.H{"deleted": len(ids)})
+		return
+	}
+	if action == "enable" {
+		value := true
+		input.Enabled = &value
+	}
+	if action == "disable" {
+		value := false
+		input.Enabled = &value
+	}
+	if input.Enabled == nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "enabled or action is required"})
+		return
+	}
+	if err := model.DB.Transaction(func(tx *gorm.DB) error {
+		var channels []model.Channel
+		if err := tx.Where("id IN ?", ids).Find(&channels).Error; err != nil {
+			return err
+		}
+		if len(channels) != len(ids) {
+			return errors.New("one or more channels do not exist")
+		}
+		for _, channel := range channels {
+			if *input.Enabled {
+				channel.Enabled = true
+			} else {
+				channel.Enabled = false
+			}
+			if err := tx.Save(&channel).Error; err != nil {
+				return err
+			}
+		}
+		return nil
+	}); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"updated": len(ids)})
 }
 
 func (api *ChannelAPI) SetGroupMultipliers(c *gin.Context) {
@@ -3556,6 +3677,31 @@ func (api *ModelAPI) DeleteChannelModel(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{"message": "Model config deleted"})
 }
 
+func (api *ModelAPI) BulkDeleteChannelModels(c *gin.Context) {
+	var input struct {
+		IDs []uint `json:"ids"`
+	}
+	if err := c.ShouldBindJSON(&input); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+	ids := uniquePositiveUintIDs(input.IDs)
+	if len(ids) == 0 {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "At least one model config is required"})
+		return
+	}
+	if err := model.DB.Transaction(func(tx *gorm.DB) error {
+		if err := tx.Where("model_config_id IN ?", ids).Delete(&model.ModelGroupMultiplier{}).Error; err != nil {
+			return err
+		}
+		return tx.Where("id IN ?", ids).Delete(&model.ModelConfig{}).Error
+	}); err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"deleted": len(ids)})
+}
+
 func (api *ModelAPI) Create(c *gin.Context) {
 	var input modelConfigInput
 	if err := c.ShouldBindJSON(&input); err != nil {
@@ -3629,6 +3775,44 @@ func (api *ModelAPI) Delete(c *gin.Context) {
 		return
 	}
 	c.JSON(http.StatusOK, gin.H{"message": "Model deleted"})
+}
+
+func (api *ModelAPI) BulkDelete(c *gin.Context) {
+	var input struct {
+		IDs []uint `json:"ids"`
+	}
+	if err := c.ShouldBindJSON(&input); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+	ids := uniquePositiveUintIDs(input.IDs)
+	if len(ids) == 0 {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "At least one model is required"})
+		return
+	}
+	if err := model.DB.Transaction(func(tx *gorm.DB) error {
+		var configs []model.ModelConfig
+		if err := tx.Where("model_id IN ?", ids).Find(&configs).Error; err != nil {
+			return err
+		}
+		configIDs := make([]uint, 0, len(configs))
+		for _, config := range configs {
+			configIDs = append(configIDs, config.ID)
+		}
+		if len(configIDs) > 0 {
+			if err := tx.Where("model_config_id IN ?", configIDs).Delete(&model.ModelGroupMultiplier{}).Error; err != nil {
+				return err
+			}
+			if err := tx.Where("id IN ?", configIDs).Delete(&model.ModelConfig{}).Error; err != nil {
+				return err
+			}
+		}
+		return tx.Where("id IN ?", ids).Delete(&model.Model{}).Error
+	}); err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"deleted": len(ids)})
 }
 
 func (api *ModelAPI) SetGroupMultipliers(c *gin.Context) {
@@ -3938,6 +4122,66 @@ func (api *UserChannelAPI) Delete(c *gin.Context) {
 		return
 	}
 	c.JSON(http.StatusOK, gin.H{"message": "User channel deleted"})
+}
+
+func (api *UserChannelAPI) BulkDelete(c *gin.Context) {
+	var input struct {
+		IDs []uint `json:"ids"`
+	}
+	if err := c.ShouldBindJSON(&input); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+	ids := uniquePositiveUintIDs(input.IDs)
+	if len(ids) == 0 {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "At least one user channel is required"})
+		return
+	}
+	if err := model.DB.Transaction(func(tx *gorm.DB) error {
+		var channels []model.Channel
+		if err := tx.Where("user_channel_id IN ?", ids).Find(&channels).Error; err != nil {
+			return err
+		}
+		channelIDs := make([]uint, 0, len(channels))
+		for _, channel := range channels {
+			channelIDs = append(channelIDs, channel.ID)
+		}
+		if len(channelIDs) > 0 {
+			if err := tx.Where("channel_id IN ?", channelIDs).Delete(&model.ChannelGroupMultiplier{}).Error; err != nil {
+				return err
+			}
+			var configs []model.ModelConfig
+			if err := tx.Where("channel_id IN ?", channelIDs).Find(&configs).Error; err != nil {
+				return err
+			}
+			configIDs := make([]uint, 0, len(configs))
+			for _, config := range configs {
+				configIDs = append(configIDs, config.ID)
+			}
+			if len(configIDs) > 0 {
+				if err := tx.Where("model_config_id IN ?", configIDs).Delete(&model.ModelGroupMultiplier{}).Error; err != nil {
+					return err
+				}
+				if err := tx.Where("id IN ?", configIDs).Delete(&model.ModelConfig{}).Error; err != nil {
+					return err
+				}
+			}
+			if err := tx.Where("id IN ?", channelIDs).Delete(&model.Channel{}).Error; err != nil {
+				return err
+			}
+		}
+		if err := tx.Where("user_channel_id IN ?", ids).Delete(&model.UserChannelGroupAccess{}).Error; err != nil {
+			return err
+		}
+		if err := tx.Where("user_channel_id IN ?", ids).Delete(&model.UserChannelUserAccess{}).Error; err != nil {
+			return err
+		}
+		return tx.Where("id IN ?", ids).Delete(&model.UserChannel{}).Error
+	}); err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"deleted": len(ids)})
 }
 
 func (api *UserChannelAPI) SetAllowedGroups(c *gin.Context) {
@@ -4783,6 +5027,53 @@ func (api *UserAPI) DeleteAPIKey(c *gin.Context) {
 		return
 	}
 	c.JSON(http.StatusOK, gin.H{"message": "API key deleted"})
+}
+
+func (api *UserAPI) BulkAPIKeys(c *gin.Context) {
+	user, ok := currentUser(c)
+	if !ok {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "Unauthorized"})
+		return
+	}
+	var input struct {
+		IDs    []uint `json:"ids"`
+		Action string `json:"action"`
+	}
+	if err := c.ShouldBindJSON(&input); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+	ids := uniquePositiveUintIDs(input.IDs)
+	if len(ids) == 0 {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "At least one API key is required"})
+		return
+	}
+	var keys []model.APIKey
+	if err := model.DB.Where("user_id = ? AND id IN ?", user.ID, ids).Find(&keys).Error; err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	if len(keys) != len(ids) {
+		c.JSON(http.StatusNotFound, gin.H{"error": "One or more API keys not found"})
+		return
+	}
+	if strings.EqualFold(strings.TrimSpace(input.Action), "export") {
+		exported := make([]apiKeyResponse, 0, len(keys))
+		for _, key := range keys {
+			exported = append(exported, toAPIKeyResponse(key))
+		}
+		c.JSON(http.StatusOK, gin.H{"keys": exported})
+		return
+	}
+	if !strings.EqualFold(strings.TrimSpace(input.Action), "delete") {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid action"})
+		return
+	}
+	if err := model.DB.Where("user_id = ? AND id IN ?", user.ID, ids).Delete(&model.APIKey{}).Error; err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"deleted": len(ids)})
 }
 
 func (api *UserAPI) List(c *gin.Context) {

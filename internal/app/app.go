@@ -809,6 +809,7 @@ func Run() error {
 		admin.POST("/channels", channelAPI.Create)
 		admin.PUT("/channels/:id", channelAPI.Update)
 		admin.PUT("/channels/:id/group-multipliers", channelAPI.SetGroupMultipliers)
+		admin.POST("/channels/bulk", channelAPI.Bulk)
 		admin.GET("/channels/:id/models", modelAPI.ListChannelModels)
 		admin.POST("/channels/:id/models", modelAPI.CreateChannelModel)
 		admin.DELETE("/channels/:id", channelAPI.Delete)
@@ -827,10 +828,12 @@ func Run() error {
 		admin.POST("/models/prices/sync/preview/community", modelAPI.PreviewCommunityPriceSync)
 		admin.POST("/models/prices/sync/apply/community", modelAPI.ApplyCommunityPriceSync)
 		admin.PUT("/models/:id", modelAPI.Update)
+		admin.POST("/models/bulk-delete", modelAPI.BulkDelete)
 		admin.DELETE("/models/:id", modelAPI.Delete)
 		admin.PUT("/channel-models/:id", modelAPI.UpdateChannelModel)
 		admin.PUT("/channel-models/:id/group-multipliers", modelAPI.SetGroupMultipliers)
 		admin.DELETE("/channel-models/:id", modelAPI.DeleteChannelModel)
+		admin.POST("/channel-models/bulk-delete", modelAPI.BulkDeleteChannelModels)
 
 		// User-facing channels
 		admin.GET("/user-channels", userChannelAPI.List)
@@ -839,6 +842,7 @@ func Run() error {
 		admin.PUT("/user-channels/:id/allowed-groups", userChannelAPI.SetAllowedGroups)
 		admin.PUT("/user-channels/:id/allowed-users", userChannelAPI.SetAllowedUsers)
 		admin.DELETE("/user-channels/:id", userChannelAPI.Delete)
+		admin.POST("/user-channels/bulk-delete", userChannelAPI.BulkDelete)
 
 		// Groups
 		admin.GET("/groups", groupAPI.List)
@@ -967,6 +971,7 @@ func Run() error {
 		userGroup.POST("/api-keys/:id/rotate", userAPI.RotateAPIKey)
 		userGroup.POST("/api-keys/:id/reset-usage", userAPI.ResetAPIKeyUsage)
 		userGroup.DELETE("/api-keys/:id", userAPI.DeleteAPIKey)
+		userGroup.POST("/api-keys/bulk", userAPI.BulkAPIKeys)
 		userGroup.POST("/api-key/rotate", userAPI.RotateAPIKey)
 		service.RegisterTicketUserRoutes(userGroup)
 		messagechannel.RegisterUserRoutes(userGroup)
