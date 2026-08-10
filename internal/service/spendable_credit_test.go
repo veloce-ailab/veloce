@@ -16,13 +16,29 @@ func newSpendableCreditDB(t *testing.T, dsn string) *gorm.DB {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := database.AutoMigrate(&model.User{}, &model.SystemSetting{}, &SubscriptionPlan{}, &UserSubscription{}); err != nil {
+	if err := database.AutoMigrate(&model.User{}, &model.SystemSetting{}, &model.UserBillingPreference{}, &SubscriptionPlan{}, &UserSubscription{}); err != nil {
 		t.Fatal(err)
 	}
 	previousDB := model.DB
 	model.DB = database
 	t.Cleanup(func() { model.DB = previousDB })
 	return database
+}
+
+func TestHasSpendableCreditForAPIKeyHonorsSelectedSources(t *testing.T) {
+	database := newSpendableCreditDB(t, "file:spendable-credit-token-sources?mode=memory&cache=shared")
+	user := model.User{Username: "restricted", Email: "restricted@example.com", APIKey: "sk-restricted", Balance: decimal.RequireFromString("5")}
+	if err := database.Create(&user).Error; err != nil {
+		t.Fatal(err)
+	}
+	key := &model.APIKey{BillingSources: `["subscription:999"]`}
+	if HasSpendableCreditForAPIKey(&user, key) {
+		t.Fatal("wallet must not be used when a token selects subscriptions only")
+	}
+	key.BillingSources = `["balance"]`
+	if !HasSpendableCreditForAPIKey(&user, key) {
+		t.Fatal("selected wallet balance must be spendable")
+	}
 }
 
 func TestHasSpendableCreditWithWalletBalance(t *testing.T) {

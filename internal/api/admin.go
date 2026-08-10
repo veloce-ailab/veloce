@@ -4578,6 +4578,7 @@ type apiKeyResponse struct {
 	QuotaRemaining      *decimal.Decimal `json:"quota_remaining,omitempty"`
 	Enabled             bool             `json:"enabled"`
 	ExpiresAt           *time.Time       `json:"expires_at,omitempty"`
+	BillingSources      []string         `json:"billing_sources,omitempty"`
 	Usage               usageStats       `json:"usage"`
 	LastUsedAt          *time.Time       `json:"last_used_at"`
 	UsageResetAt        *time.Time       `json:"usage_reset_at"`
@@ -4603,6 +4604,7 @@ type apiKeyInput struct {
 	Enabled             *bool            `json:"enabled"`
 	ExpiresAt           *time.Time       `json:"expires_at"`
 	ClearExpiration     bool             `json:"clear_expiration"`
+	BillingSources      []string         `json:"billing_sources"`
 }
 
 const maxUserAvatarBytes int64 = 2 << 20
@@ -5033,6 +5035,10 @@ func (api *UserAPI) CreateAPIKey(c *gin.Context) {
 	if input.Enabled != nil {
 		enabled = *input.Enabled
 	}
+	billingSources := ""
+	if len(input.BillingSources) > 0 {
+		billingSources = service.EncodeBillingSources(input.BillingSources)
+	}
 
 	apiKey := model.APIKey{
 		UserID:              user.ID,
@@ -5045,6 +5051,7 @@ func (api *UserAPI) CreateAPIKey(c *gin.Context) {
 		AllowedIPs:          service.JoinList(input.AllowedIPs),
 		QuotaLimit:          quotaLimit,
 		ExpiresAt:           input.ExpiresAt,
+		BillingSources:      billingSources,
 		Enabled:             enabled,
 	}
 	if err := model.DB.Create(&apiKey).Error; err != nil {
@@ -5107,6 +5114,13 @@ func (api *UserAPI) UpdateAPIKey(c *gin.Context) {
 			return
 		}
 		updates["expires_at"] = input.ExpiresAt
+	}
+	if input.BillingSources != nil {
+		if len(input.BillingSources) == 0 {
+			updates["billing_sources"] = ""
+		} else {
+			updates["billing_sources"] = service.EncodeBillingSources(input.BillingSources)
+		}
 	}
 
 	if err := model.DB.Model(&apiKey).Updates(updates).Error; err != nil {
@@ -5844,6 +5858,7 @@ func (api *StatsAPI) GetUserDashboardStats(c *gin.Context) {
 	var totalCost decimal.Decimal
 	var rpm int64
 	var tpm int64
+	var subscriptionBalance decimal.Decimal
 	rateWindowStart := time.Now().Add(-1 * time.Minute)
 
 	if summary, err := model.SummarizeTokenLogs(model.TokenLogFilter{UserID: &user.ID}); err == nil {
@@ -5858,15 +5873,19 @@ func (api *StatsAPI) GetUserDashboardStats(c *gin.Context) {
 		rpm = summary.RequestCount
 		tpm = summary.TotalTokens
 	}
+	_ = model.DB.Model(&service.UserSubscription{}).
+		Where("user_id = ? AND (active_until IS NULL OR active_until > ?)", user.ID, time.Now()).
+		Select("COALESCE(SUM(balance), 0)").Scan(&subscriptionBalance).Error
 
 	c.JSON(http.StatusOK, gin.H{
-		"balance":        user.Balance,
-		"group":          user.Group,
-		"total_requests": totalRequests,
-		"today_requests": todayRequests,
-		"total_cost":     totalCost,
-		"rpm":            rpm,
-		"tpm":            tpm,
+		"balance":              user.Balance,
+		"subscription_balance": subscriptionBalance,
+		"group":                user.Group,
+		"total_requests":       totalRequests,
+		"today_requests":       todayRequests,
+		"total_cost":           totalCost,
+		"rpm":                  rpm,
+		"tpm":                  tpm,
 	})
 }
 
@@ -5892,6 +5911,7 @@ func toAPIKeyResponse(apiKey model.APIKey) apiKeyResponse {
 		QuotaLimit:          apiKey.QuotaLimit,
 		Enabled:             apiKey.Enabled,
 		ExpiresAt:           apiKey.ExpiresAt,
+		BillingSources:      service.ParseBillingSources(apiKey.BillingSources),
 		Usage:               usage,
 		LastUsedAt:          apiKey.LastUsedAt,
 		UsageResetAt:        apiKey.UsageResetAt,

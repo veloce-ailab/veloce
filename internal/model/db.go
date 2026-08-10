@@ -68,6 +68,7 @@ func InitDB() {
 		&APIKey{},
 		&UserNotificationSettings{},
 		&UserNotificationDelivery{},
+		&UserBillingPreference{},
 		&EmailVerificationCode{},
 		&PhoneVerificationCode{},
 		&OIDCBindRequest{},

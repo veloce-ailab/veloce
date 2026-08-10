@@ -3,15 +3,16 @@ package service
 import (
 	"crypto/rand"
 	"encoding/base32"
+	"encoding/json"
 	"errors"
 	"net/http"
 	"strconv"
 	"strings"
 	"time"
 
-	"github.com/veloce-ailab/veloce/internal/model"
 	"github.com/gin-gonic/gin"
 	"github.com/shopspring/decimal"
+	"github.com/veloce-ailab/veloce/internal/model"
 	"gorm.io/gorm"
 	"gorm.io/gorm/clause"
 )
@@ -81,6 +82,45 @@ func (PremiumRedemptionLog) TableName() string {
 
 type subscriptionAPI struct{}
 
+const billingSourceBalance = "balance"
+
+func billingSourceSubscription(id uint) string {
+	return "subscription:" + strconv.FormatUint(uint64(id), 10)
+}
+
+func parseBillingSources(raw string) []string {
+	var sources []string
+	if strings.TrimSpace(raw) == "" || json.Unmarshal([]byte(raw), &sources) != nil {
+		return nil
+	}
+	return normalizeBillingSources(sources)
+}
+
+func normalizeBillingSources(sources []string) []string {
+	seen := make(map[string]bool, len(sources))
+	result := make([]string, 0, len(sources))
+	for _, source := range sources {
+		source = strings.TrimSpace(strings.ToLower(source))
+		if source != billingSourceBalance && !strings.HasPrefix(source, "subscription:") {
+			continue
+		}
+		if source == "subscription:" || seen[source] {
+			continue
+		}
+		seen[source] = true
+		result = append(result, source)
+	}
+	return result
+}
+
+func encodeBillingSources(sources []string) string {
+	data, _ := json.Marshal(normalizeBillingSources(sources))
+	return string(data)
+}
+
+func ParseBillingSources(raw string) []string      { return parseBillingSources(raw) }
+func EncodeBillingSources(sources []string) string { return encodeBillingSources(sources) }
+
 type subscriptionPlanInput struct {
 	Name              string          `json:"name"`
 	ResetAmount       decimal.Decimal `json:"reset_amount"`
@@ -127,9 +167,80 @@ func RegisterSubscriptionAdminRoutes(group *gin.RouterGroup) {
 func RegisterSubscriptionUserRoutes(group *gin.RouterGroup) {
 	api := &subscriptionAPI{}
 	group.GET("/subscription", api.mySubscription)
+	group.GET("/billing-settings", api.billingSettings)
+	group.PUT("/billing-settings", api.updateBillingSettings)
 	group.GET("/subscription-plans", api.purchasablePlans)
 	group.POST("/subscription/purchase", api.purchaseSubscription)
 	group.POST("/redeem-code", api.redeemCode)
+}
+
+func (api *subscriptionAPI) billingSettings(c *gin.Context) {
+	user, ok := currentUserFromContext(c)
+	if !ok {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "Unauthorized"})
+		return
+	}
+	if err := model.DB.Transaction(func(tx *gorm.DB) error { return resetDueSubscriptions(tx, user.ID, time.Now()) }); err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	var subscriptions []UserSubscription
+	if err := activeSubscriptions(model.DB, user.ID, time.Now()).Preload("Plan").Order("active_until ASC, id ASC").Find(&subscriptions).Error; err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	var preference model.UserBillingPreference
+	_ = model.DB.First(&preference, user.ID).Error
+	order := parseBillingSources(preference.SourceOrder)
+	if len(order) == 0 {
+		order = defaultBillingSourceOrder(subscriptions)
+	}
+	c.JSON(http.StatusOK, gin.H{"order": order, "subscriptions": subscriptions, "balance": user.Balance})
+}
+
+func (api *subscriptionAPI) updateBillingSettings(c *gin.Context) {
+	user, ok := currentUserFromContext(c)
+	if !ok {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "Unauthorized"})
+		return
+	}
+	var input struct {
+		Order []string `json:"order"`
+	}
+	if err := c.ShouldBindJSON(&input); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid billing order"})
+		return
+	}
+	order := normalizeBillingSources(input.Order)
+	var subscriptions []UserSubscription
+	if err := activeSubscriptions(model.DB, user.ID, time.Now()).Find(&subscriptions).Error; err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	valid := map[string]bool{billingSourceBalance: true}
+	for _, subscription := range subscriptions {
+		valid[billingSourceSubscription(subscription.ID)] = true
+	}
+	for _, source := range order {
+		if !valid[source] {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "Billing order contains an unavailable subscription"})
+			return
+		}
+	}
+	preference := model.UserBillingPreference{UserID: user.ID, SourceOrder: encodeBillingSources(order)}
+	if err := model.DB.Where("user_id = ?", user.ID).Assign(preference).FirstOrCreate(&preference).Error; err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"order": order})
+}
+
+func defaultBillingSourceOrder(subscriptions []UserSubscription) []string {
+	order := make([]string, 0, len(subscriptions)+1)
+	for _, subscription := range subscriptions {
+		order = append(order, billingSourceSubscription(subscription.ID))
+	}
+	return append(order, billingSourceBalance)
 }
 
 func requireOperationModeFeature(c *gin.Context) bool {
@@ -656,27 +767,58 @@ func grantPurchasedSubscription(tx *gorm.DB, userID uint, plan SubscriptionPlan)
 // well: applySubscriptionUsageCharge refills it before charging, so its stored
 // balance being zero right now says nothing about what it can pay.
 func HasSpendableCredit(user *model.User) bool {
+	return HasSpendableCreditForAPIKey(user, nil)
+}
+
+func HasSpendableCreditForAPIKey(user *model.User, apiKey *model.APIKey) bool {
 	if user == nil {
 		return false
-	}
-	if user.Balance.GreaterThan(decimal.Zero) {
-		return true
 	}
 	if model.DB == nil {
 		return false
 	}
+	custom := apiKey != nil && strings.TrimSpace(apiKey.BillingSources) != ""
+	sources := []string{}
+	if custom {
+		sources = parseBillingSources(apiKey.BillingSources)
+	}
+	allowsBalance := !custom
+	for _, source := range sources {
+		if source == billingSourceBalance {
+			allowsBalance = true
+		}
+	}
+	if allowsBalance && user.Balance.GreaterThan(decimal.Zero) {
+		return true
+	}
 	now := time.Now()
 	var count int64
-	if err := activeSubscriptions(model.DB, user.ID, now).
-		Model(&UserSubscription{}).
-		Where("balance > ? OR next_reset_at <= ?", decimal.Zero, now).
-		Count(&count).Error; err != nil {
+	query := activeSubscriptions(model.DB, user.ID, now).Model(&UserSubscription{}).Where("balance > ? OR next_reset_at <= ?", decimal.Zero, now)
+	if custom {
+		ids := make([]uint, 0)
+		for _, source := range sources {
+			if strings.HasPrefix(source, "subscription:") {
+				if id, err := strconv.ParseUint(strings.TrimPrefix(source, "subscription:"), 10, 64); err == nil {
+					ids = append(ids, uint(id))
+				}
+			}
+		}
+		if len(ids) == 0 {
+			return false
+		}
+		query = query.Where("id IN ?", ids)
+	}
+	if err := query.Count(&count).Error; err != nil {
 		return false
 	}
 	return count > 0
 }
 
 func applySubscriptionUsageCharge(tx *gorm.DB, userID uint, cost decimal.Decimal) error {
+	return applySubscriptionUsageChargeForAPIKey(tx, userID, nil, cost)
+}
+
+func applySubscriptionUsageChargeForAPIKey(tx *gorm.DB, userID uint, apiKey *model.APIKey, cost decimal.Decimal) error {
 	if cost.LessThanOrEqual(decimal.Zero) {
 		return nil
 	}
@@ -684,14 +826,58 @@ func applySubscriptionUsageCharge(tx *gorm.DB, userID uint, cost decimal.Decimal
 	if err := resetDueSubscriptions(tx, userID, now); err != nil {
 		return err
 	}
-	remaining := cost
 	var subscriptions []UserSubscription
 	if err := activeSubscriptions(tx, userID, now).Where("balance > ?", decimal.Zero).Order("active_until ASC, id ASC").Find(&subscriptions).Error; err != nil {
 		return err
 	}
+	bySource := make(map[string]UserSubscription, len(subscriptions))
 	for _, subscription := range subscriptions {
+		bySource[billingSourceSubscription(subscription.ID)] = subscription
+	}
+	var sources []string
+	custom := apiKey != nil && strings.TrimSpace(apiKey.BillingSources) != ""
+	if custom {
+		sources = parseBillingSources(apiKey.BillingSources)
+	} else {
+		var preference model.UserBillingPreference
+		if err := tx.First(&preference, userID).Error; err == nil {
+			sources = parseBillingSources(preference.SourceOrder)
+		}
+		if len(sources) == 0 {
+			sources = defaultBillingSourceOrder(subscriptions)
+		}
+		seen := make(map[string]bool, len(sources))
+		for _, source := range sources {
+			seen[source] = true
+		}
+		for _, subscription := range subscriptions {
+			source := billingSourceSubscription(subscription.ID)
+			if !seen[source] {
+				sources = append(sources, source)
+			}
+		}
+		if !seen[billingSourceBalance] {
+			sources = append(sources, billingSourceBalance)
+		}
+	}
+	remaining := cost
+	for _, source := range sources {
 		if remaining.LessThanOrEqual(decimal.Zero) {
 			break
+		}
+		if source == billingSourceBalance {
+			balanceUpdate := tx.Model(&model.User{}).Where("id = ? AND balance >= ?", userID, remaining).UpdateColumn("balance", gorm.Expr("balance - ?", remaining))
+			if balanceUpdate.Error != nil {
+				return balanceUpdate.Error
+			}
+			if balanceUpdate.RowsAffected > 0 {
+				remaining = decimal.Zero
+			}
+			continue
+		}
+		subscription, ok := bySource[source]
+		if !ok {
+			continue
 		}
 		deduction := decimal.Min(subscription.Balance, remaining)
 		if deduction.LessThanOrEqual(decimal.Zero) {
@@ -711,14 +897,7 @@ func applySubscriptionUsageCharge(tx *gorm.DB, userID uint, cost decimal.Decimal
 	if remaining.LessThanOrEqual(decimal.Zero) {
 		return nil
 	}
-	balanceUpdate := tx.Model(&model.User{}).Where("id = ? AND balance >= ?", userID, remaining).UpdateColumn("balance", gorm.Expr("balance - ?", remaining))
-	if balanceUpdate.Error != nil {
-		return balanceUpdate.Error
-	}
-	if balanceUpdate.RowsAffected == 0 {
-		return ErrInsufficientBalance
-	}
-	return nil
+	return ErrInsufficientBalance
 }
 
 func resetDueSubscriptions(tx *gorm.DB, userID uint, now time.Time) error {

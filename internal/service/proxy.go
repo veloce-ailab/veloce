@@ -1201,7 +1201,7 @@ func (s *ProxyService) resolveTargets(c *gin.Context, modelName string) ([]*prox
 		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "No available channel for this model"})
 		return nil, false
 	}
-	if !PersonalModeEnabled() && !HasSpendableCredit(user) {
+	if !PersonalModeEnabled() && !HasSpendableCreditForAPIKey(user, apiKey) {
 		c.JSON(http.StatusPaymentRequired, gin.H{"error": "Insufficient balance"})
 		return nil, false
 	}
@@ -1506,11 +1506,13 @@ func (s *ProxyService) settleUsage(c *gin.Context, user *model.User, apiKey *mod
 		return decimal.Zero, http.StatusPaymentRequired, "API key quota exceeded", ErrAPIKeyQuotaExceeded
 	}
 
-	applyCharge := ApplyUsageCharge
+	var chargeErr error
 	if responseDelivered {
-		applyCharge = ApplyDeliveredUsageCharge
+		chargeErr = ApplyDeliveredUsageChargeForAPIKey(tx, user.ID, apiKey, cost)
+	} else {
+		chargeErr = ApplyUsageChargeForAPIKey(tx, user.ID, apiKey, cost)
 	}
-	if err := applyCharge(tx, user.ID, cost); err != nil {
+	if err := chargeErr; err != nil {
 		tx.Rollback()
 		cache.InvalidateUserBillingBalance(billingContext, user.ID)
 		if errors.Is(err, ErrInsufficientBalance) {

@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"net/http"
+	"strings"
 
 	"github.com/gin-gonic/gin"
 	"github.com/shopspring/decimal"
@@ -155,6 +156,13 @@ func ApplyUsageCharge(tx *gorm.DB, userID uint, cost decimal.Decimal) error {
 	return applySubscriptionUsageCharge(tx, userID, cost)
 }
 
+func ApplyUsageChargeForAPIKey(tx *gorm.DB, userID uint, apiKey *model.APIKey, cost decimal.Decimal) error {
+	if cost.LessThanOrEqual(decimal.Zero) || PersonalModeEnabledInTx(tx) {
+		return nil
+	}
+	return applySubscriptionUsageChargeForAPIKey(tx, userID, apiKey, cost)
+}
+
 // ApplyDeliveredUsageCharge charges usage for a response that has already been
 // sent to the client. Refusing the charge is not an option at that point, so a
 // shortfall drains whatever balance is left instead of leaving it untouched:
@@ -164,6 +172,30 @@ func ApplyDeliveredUsageCharge(tx *gorm.DB, userID uint, cost decimal.Decimal) e
 	err := ApplyUsageCharge(tx, userID, cost)
 	if !errors.Is(err, ErrInsufficientBalance) {
 		return err
+	}
+	drain := tx.Exec("UPDATE users SET balance = 0 WHERE id = ? AND balance > 0", userID)
+	if drain.Error != nil {
+		return drain.Error
+	}
+	return nil
+}
+
+func ApplyDeliveredUsageChargeForAPIKey(tx *gorm.DB, userID uint, apiKey *model.APIKey, cost decimal.Decimal) error {
+	err := ApplyUsageChargeForAPIKey(tx, userID, apiKey, cost)
+	if !errors.Is(err, ErrInsufficientBalance) {
+		return err
+	}
+	if apiKey != nil && strings.TrimSpace(apiKey.BillingSources) != "" {
+		allowsBalance := false
+		for _, source := range ParseBillingSources(apiKey.BillingSources) {
+			if source == billingSourceBalance {
+				allowsBalance = true
+				break
+			}
+		}
+		if !allowsBalance {
+			return nil
+		}
 	}
 	drain := tx.Exec("UPDATE users SET balance = 0 WHERE id = ? AND balance > 0", userID)
 	if drain.Error != nil {

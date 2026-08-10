@@ -305,7 +305,7 @@ func (s *ProxyService) billServerUsage(c *gin.Context, user *model.User, apiKey 
 		tx.Rollback()
 		return decimal.Zero, http.StatusPaymentRequired, "API key quota exceeded", ErrAPIKeyQuotaExceeded
 	}
-	if err := applyChatExecutorUsageCharge(tx, user.ID, cost, chargeBalance); err != nil {
+	if err := applyChatExecutorUsageCharge(tx, user.ID, apiKey, cost, chargeBalance); err != nil {
 		tx.Rollback()
 		cache.InvalidateUserBillingBalance(billingContext, user.ID)
 		if errors.Is(err, ErrInsufficientBalance) {
@@ -336,9 +336,9 @@ func (s *ProxyService) billServerUsage(c *gin.Context, user *model.User, apiKey 
 	return cost, 0, "", nil
 }
 
-func applyChatExecutorUsageCharge(tx *gorm.DB, userID uint, cost decimal.Decimal, chargeBalance bool) error {
+func applyChatExecutorUsageCharge(tx *gorm.DB, userID uint, apiKey *model.APIKey, cost decimal.Decimal, chargeBalance bool) error {
 	if !chargeBalance {
-		return ApplyUsageCharge(tx, userID, cost)
+		return ApplyUsageChargeForAPIKey(tx, userID, apiKey, cost)
 	}
 	if cost.LessThanOrEqual(decimal.Zero) {
 		return nil
@@ -346,7 +346,7 @@ func applyChatExecutorUsageCharge(tx *gorm.DB, userID uint, cost decimal.Decimal
 	// chargeBalance forces settlement even in personal mode, so this bypasses
 	// ApplyUsageCharge's personal-mode exemption but keeps the same order:
 	// subscription quota first, wallet balance as the fallback.
-	return applySubscriptionUsageCharge(tx, userID, cost)
+	return applySubscriptionUsageChargeForAPIKey(tx, userID, apiKey, cost)
 }
 
 func clientIPForLog(c *gin.Context) string {

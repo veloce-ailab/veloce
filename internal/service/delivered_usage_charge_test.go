@@ -2,7 +2,9 @@ package service
 
 import (
 	"errors"
+	"strconv"
 	"testing"
+	"time"
 
 	"github.com/glebarez/sqlite"
 	"github.com/shopspring/decimal"
@@ -16,7 +18,7 @@ func newDeliveredChargeDB(t *testing.T, dsn string) *gorm.DB {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := database.AutoMigrate(&model.User{}, &model.SystemSetting{}, &SubscriptionPlan{}, &UserSubscription{}); err != nil {
+	if err := database.AutoMigrate(&model.User{}, &model.SystemSetting{}, &model.UserBillingPreference{}, &SubscriptionPlan{}, &UserSubscription{}); err != nil {
 		t.Fatal(err)
 	}
 	previousDB := model.DB
@@ -75,5 +77,35 @@ func TestApplyDeliveredUsageChargeDeductsWhenAffordable(t *testing.T) {
 	balance := deliveredChargeUserBalance(t, database, user.ID)
 	if !balance.Equal(decimal.RequireFromString("7.5")) {
 		t.Fatalf("balance = %s, want 7.5", balance)
+	}
+}
+
+func TestApplyUsageChargeForAPIKeyUsesSelectedSubscriptionOnly(t *testing.T) {
+	database := newDeliveredChargeDB(t, "file:token-selected-subscription?mode=memory&cache=shared")
+	user := model.User{Username: "token-source", Email: "token-source@example.com", APIKey: "sk-token-source", Balance: decimal.RequireFromString("5")}
+	if err := database.Create(&user).Error; err != nil {
+		t.Fatal(err)
+	}
+	plan := SubscriptionPlan{Name: "Token plan", ResetAmount: decimal.NewFromInt(3), ResetIntervalDays: 30, Enabled: true}
+	if err := database.Create(&plan).Error; err != nil {
+		t.Fatal(err)
+	}
+	subscription := UserSubscription{UserID: user.ID, PlanID: plan.ID, Balance: decimal.NewFromInt(3), NextResetAt: time.Now().Add(24 * time.Hour)}
+	if err := database.Create(&subscription).Error; err != nil {
+		t.Fatal(err)
+	}
+	key := &model.APIKey{BillingSources: `["subscription:` + strconv.FormatUint(uint64(subscription.ID), 10) + `"]`}
+	if err := ApplyUsageChargeForAPIKey(database, user.ID, key, decimal.NewFromInt(2)); err != nil {
+		t.Fatal(err)
+	}
+	if balance := deliveredChargeUserBalance(t, database, user.ID); !balance.Equal(decimal.RequireFromString("5")) {
+		t.Fatalf("wallet balance = %s, want 5", balance)
+	}
+	var refreshed UserSubscription
+	if err := database.First(&refreshed, subscription.ID).Error; err != nil {
+		t.Fatal(err)
+	}
+	if !refreshed.Balance.Equal(decimal.NewFromInt(1)) {
+		t.Fatalf("subscription balance = %s, want 1", refreshed.Balance)
 	}
 }
