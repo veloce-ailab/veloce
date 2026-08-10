@@ -77,6 +77,7 @@ func Run() error {
 	statusService := service.NewStatusService()
 	reliabilityService := service.NewReliabilityService()
 	logCleanupService := service.NewLogCleanupService()
+	notificationService := service.NewNotificationService()
 	rateLimiter := middleware.NewRateLimiter()
 
 	// Register recurring jobs with the unified scheduler and start its loop.
@@ -84,6 +85,7 @@ func Run() error {
 	statusService.Start()
 	reliabilityService.Start()
 	logCleanupService.Start()
+	notificationService.Start()
 	service.StartScheduler()
 
 	// Initialize Gin
@@ -972,6 +974,8 @@ func Run() error {
 		userGroup.POST("/api-keys/:id/reset-usage", userAPI.ResetAPIKeyUsage)
 		userGroup.DELETE("/api-keys/:id", userAPI.DeleteAPIKey)
 		userGroup.POST("/api-keys/bulk", userAPI.BulkAPIKeys)
+		userGroup.GET("/notification-settings", userAPI.GetNotificationSettings)
+		userGroup.PUT("/notification-settings", userAPI.UpdateNotificationSettings)
 		userGroup.POST("/api-key/rotate", userAPI.RotateAPIKey)
 		service.RegisterTicketUserRoutes(userGroup)
 		messagechannel.RegisterUserRoutes(userGroup)

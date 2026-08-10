@@ -160,6 +160,7 @@ func (s *AuthService) RegisterWithPhone(input PhoneRegisterInput) (*model.User, 
 		GroupID:      defaultGroup.ID,
 		ReferralCode: &userReferralCode,
 		ReferrerID:   referrerID,
+		Balance:      NewUserGiftCredit(),
 	}
 	if err := model.DB.Create(&user).Error; err != nil {
 		return nil, "", err

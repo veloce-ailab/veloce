@@ -93,6 +93,7 @@ type APIKey struct {
 	AllowedIPs          string          `gorm:"column:allowed_ips;type:text" json:"-"`
 	QuotaLimit          decimal.Decimal `gorm:"type:decimal(20,10);default:0" json:"quota_limit"`
 	Enabled             bool            `gorm:"default:true" json:"enabled"`
+	ExpiresAt           *time.Time      `gorm:"index" json:"expires_at,omitempty"`
 	LastUsedAt          *time.Time      `json:"last_used_at"`
 	UsageResetAt        *time.Time      `json:"usage_reset_at"`
 	CreatedAt           time.Time       `json:"created_at"`

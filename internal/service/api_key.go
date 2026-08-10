@@ -23,6 +23,7 @@ var (
 	ErrAPIKeyNotFound      = errors.New("api key not found")
 	ErrAPIKeyIPRestricted  = errors.New("api key is not allowed from this IP")
 	ErrAPIKeyQuotaExceeded = errors.New("api key quota exceeded")
+	ErrAPIKeyExpired       = errors.New("api key has expired")
 )
 
 func GenerateAPIKey() (string, string, error) {
@@ -59,6 +60,9 @@ func FindUserByAPIKey(raw, clientIP string) (*model.User, *model.APIKey, error) 
 		if !apiKey.Enabled {
 			return nil, nil, ErrAPIKeyNotFound
 		}
+		if apiKey.ExpiresAt != nil && !apiKey.ExpiresAt.After(time.Now()) {
+			return nil, nil, ErrAPIKeyExpired
+		}
 		if !APIKeyAllowsIP(apiKey, clientIP) {
 			return nil, nil, ErrAPIKeyIPRestricted
 		}
@@ -80,6 +84,9 @@ func FindUserByAPIKey(raw, clientIP string) (*model.User, *model.APIKey, error) 
 		}
 		if !apiKey.Enabled {
 			return nil, nil, ErrAPIKeyNotFound
+		}
+		if apiKey.ExpiresAt != nil && !apiKey.ExpiresAt.After(time.Now()) {
+			return nil, nil, ErrAPIKeyExpired
 		}
 		if !APIKeyAllowsIP(apiKey, clientIP) {
 			return nil, nil, ErrAPIKeyIPRestricted

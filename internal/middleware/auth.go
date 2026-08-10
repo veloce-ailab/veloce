@@ -30,6 +30,11 @@ func AuthMiddleware(authService *service.AuthService) gin.HandlerFunc {
 					c.Abort()
 					return
 				}
+				if errors.Is(err, service.ErrAPIKeyExpired) {
+					c.JSON(http.StatusUnauthorized, gin.H{"error": "API key has expired"})
+					c.Abort()
+					return
+				}
 				c.JSON(http.StatusUnauthorized, gin.H{"error": "Invalid API key"})
 				c.Abort()
 				return

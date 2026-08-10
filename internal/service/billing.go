@@ -1,9 +1,9 @@
 package service
 
 import (
-	"github.com/veloce-ailab/veloce/internal/model"
 	"github.com/pkoukk/tiktoken-go"
 	"github.com/shopspring/decimal"
+	"github.com/veloce-ailab/veloce/internal/model"
 )
 
 // CountTokens estimates the number of tokens in a string for a given model
@@ -102,7 +102,7 @@ func CalculateTieredTokenCostWithMetrics(tokens int, basePrice decimal.Decimal, 
 
 func usesConditionalPriceTiers(tiers model.PriceTierList) bool {
 	for _, tier := range tiers {
-		if model.NormalizePriceTierCondition(tier.Condition) != "" {
+		if model.NormalizePriceTierCondition(tier.Condition) != "" || model.NormalizePriceTierOperator(tier.Operator) != ">=" {
 			return true
 		}
 	}
@@ -114,7 +114,16 @@ func conditionalTierPrice(basePrice decimal.Decimal, tiers model.PriceTierList, 
 	bestMin := -1
 	for _, tier := range tiers {
 		conditionValue := tierConditionValue(tier.Condition, metrics)
-		if conditionValue < tier.MinTokens {
+		if !priceTierMatches(conditionValue, tier) {
+			continue
+		}
+		// More-specific lower bounds win; upper-bound conditions are applied in
+		// ascending order so the tightest matching bound wins.
+		if model.NormalizePriceTierOperator(tier.Operator) == "<" || model.NormalizePriceTierOperator(tier.Operator) == "<=" {
+			if bestMin == -1 || tier.MinTokens < bestMin {
+				bestMin = tier.MinTokens
+				price = tier.Price
+			}
 			continue
 		}
 		if tier.MinTokens >= bestMin {
@@ -123,6 +132,19 @@ func conditionalTierPrice(basePrice decimal.Decimal, tiers model.PriceTierList, 
 		}
 	}
 	return price
+}
+
+func priceTierMatches(value int, tier model.PriceTier) bool {
+	switch model.NormalizePriceTierOperator(tier.Operator) {
+	case ">":
+		return value > tier.MinTokens
+	case "<=":
+		return value <= tier.MinTokens
+	case "<":
+		return value < tier.MinTokens
+	default:
+		return value >= tier.MinTokens
+	}
 }
 
 func withCurrentTokens(metrics PriceTierMetrics, tokens int) PriceTierMetrics {

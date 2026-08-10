@@ -1648,6 +1648,9 @@ func priceTiersFromValue(value interface{}) (model.PriceTierList, bool) {
 					if len(tierValue) > 2 {
 						tier.Condition = stringFromValue(tierValue[2])
 					}
+					if len(tierValue) > 3 {
+						tier.Operator = stringFromValue(tierValue[3])
+					}
 					tiers = append(tiers, tier)
 				}
 			}
@@ -1678,6 +1681,7 @@ func priceTiersFromValue(value interface{}) (model.PriceTierList, bool) {
 				tier := model.PriceTier{MinTokens: minTokens, Price: price}
 				if nested, ok := raw.(map[string]interface{}); ok {
 					tier.Condition = firstStringValue(nested, "", "condition", "tier_condition", "tierCondition", "basis", "threshold_basis", "thresholdBasis")
+					tier.Operator = firstStringValue(nested, "", "operator", "comparison", "compare", "op")
 				}
 				tiers = append(tiers, tier)
 			}
@@ -1711,6 +1715,7 @@ func priceTierFromMap(value map[string]interface{}) (model.PriceTier, bool) {
 		MinTokens: minTokens,
 		Price:     price,
 		Condition: firstStringValue(value, "", "condition", "tier_condition", "tierCondition", "basis", "threshold_basis", "thresholdBasis"),
+		Operator:  firstStringValue(value, "", "operator", "comparison", "compare", "op"),
 	}, true
 }
 

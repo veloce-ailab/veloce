@@ -6,9 +6,9 @@ import (
 	"net/http/httptest"
 	"testing"
 
-	"github.com/veloce-ailab/veloce/internal/model"
 	"github.com/glebarez/sqlite"
 	"github.com/shopspring/decimal"
+	"github.com/veloce-ailab/veloce/internal/model"
 	"gorm.io/gorm"
 )
 
@@ -460,6 +460,20 @@ func TestCalculateTieredTokenCostWithFullInputCondition(t *testing.T) {
 	want := decimal.RequireFromString("0.02")
 	if !got.Equal(want) {
 		t.Fatalf("CalculateTieredTokenCostWithMetrics() = %s, want %s", got.String(), want.String())
+	}
+}
+
+func TestCalculateTieredTokenCostWithComparisonOperator(t *testing.T) {
+	tiers := model.PriceTierList{{
+		MinTokens: 2000,
+		Price:     decimal.NewFromInt(20),
+		Condition: model.PriceTierConditionFullInputTokens,
+		Operator:  "<",
+	}}
+	below := CalculateTieredTokenCostWithMetrics(1000, decimal.NewFromInt(10), tiers, PriceTierMetrics{FullInputTokens: 1999})
+	above := CalculateTieredTokenCostWithMetrics(1000, decimal.NewFromInt(10), tiers, PriceTierMetrics{FullInputTokens: 2000})
+	if !below.Equal(decimal.RequireFromString("0.02")) || !above.Equal(decimal.RequireFromString("0.01")) {
+		t.Fatalf("comparison tier costs = %s, %s; want 0.02, 0.01", below, above)
 	}
 }
 

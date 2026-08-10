@@ -170,6 +170,7 @@ func (s *AuthService) handleOAuthCallback(ctx context.Context, providerKey strin
 			ReferralCode:  &userReferralCode,
 			ReferrerID:    referrerID,
 			IsAdmin:       isBootstrapAdmin,
+			Balance:       NewUserGiftCredit(),
 		}
 		if err := model.DB.Create(&user).Error; err != nil {
 			return nil, "", err

@@ -369,6 +369,7 @@ func (s *AuthService) RegisterWithPassword(input PasswordRegisterInput) (*model.
 		ReferralCode:  &userReferralCode,
 		ReferrerID:    referrerID,
 		IsAdmin:       isAdmin,
+		Balance:       NewUserGiftCredit(),
 	}
 	if err := model.DB.Create(&user).Error; err != nil {
 		return nil, "", err

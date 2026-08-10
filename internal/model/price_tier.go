@@ -25,6 +25,7 @@ type PriceTier struct {
 	MinTokens int             `json:"min_tokens"`
 	Price     decimal.Decimal `json:"price"`
 	Condition string          `json:"condition,omitempty"`
+	Operator  string          `json:"operator,omitempty"`
 }
 
 type PriceTierList []PriceTier
@@ -84,7 +85,8 @@ func NormalizePriceTiers(tiers PriceTierList) PriceTierList {
 			continue
 		}
 		tier.Condition = NormalizePriceTierCondition(tier.Condition)
-		key := fmt.Sprintf("%s:%d", tier.Condition, tier.MinTokens)
+		tier.Operator = NormalizePriceTierOperator(tier.Operator)
+		key := fmt.Sprintf("%s:%s:%d", tier.Condition, tier.Operator, tier.MinTokens)
 		byTier[key] = tier
 	}
 	if len(byTier) == 0 {
@@ -117,9 +119,27 @@ func MultiplyPriceTiers(tiers PriceTierList, multiplier decimal.Decimal) PriceTi
 			MinTokens: tier.MinTokens,
 			Price:     tier.Price.Mul(multiplier),
 			Condition: tier.Condition,
+			Operator:  tier.Operator,
 		})
 	}
 	return result
+}
+
+// NormalizePriceTierOperator returns the comparison used by conditional tiers.
+// Empty legacy values mean greater-than-or-equal-to.
+func NormalizePriceTierOperator(operator string) string {
+	switch strings.TrimSpace(operator) {
+	case "", ">=", "gte":
+		return ">="
+	case ">", "gt":
+		return ">"
+	case "<=", "lte":
+		return "<="
+	case "<", "lt":
+		return "<"
+	default:
+		return ">="
+	}
 }
 
 func NormalizePriceTierCondition(condition string) string {

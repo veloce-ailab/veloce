@@ -303,6 +303,8 @@ type systemSettingsResponse struct {
 	HCaptchaSiteKey                      string `json:"hcaptcha_site_key"`
 	HCaptchaSecret                       string `json:"hcaptcha_secret,omitempty"`
 	EmailVerificationRequired            bool   `json:"email_verification_required"`
+	NotificationsEnabled                 bool   `json:"notifications_enabled"`
+	NewUserGiftCredit                    string `json:"new_user_gift_credit"`
 	RegistrationEmailSuffixes            string `json:"registration_email_suffixes"`
 	RegistrationEmailRouting             string `json:"registration_email_routing"`
 	SMTPHost                             string `json:"smtp_host,omitempty"`
@@ -490,6 +492,8 @@ type systemSettingsInput struct {
 	HCaptchaSiteKey                      *string `json:"hcaptcha_site_key"`
 	HCaptchaSecret                       *string `json:"hcaptcha_secret"`
 	EmailVerificationRequired            *bool   `json:"email_verification_required"`
+	NotificationsEnabled                 *bool   `json:"notifications_enabled"`
+	NewUserGiftCredit                    *string `json:"new_user_gift_credit"`
 	RegistrationEmailSuffixes            *string `json:"registration_email_suffixes"`
 	RegistrationEmailRouting             *string `json:"registration_email_routing"`
 	SMTPHost                             *string `json:"smtp_host"`
@@ -1243,6 +1247,7 @@ func (api *SystemAPI) UpdateSettings(c *gin.Context) {
 		"token_api_enabled":                        input.TokenAPIEnabled,
 		"password_hcaptcha_enabled":                input.PasswordHCaptchaEnabled,
 		"email_verification_required":              input.EmailVerificationRequired,
+		"notifications_enabled":                    input.NotificationsEnabled,
 		"sms_enabled":                              input.SMSEnabled,
 		"sms_login_enabled":                        input.SMSLoginEnabled,
 		"sms_binding_required":                     input.SMSBindingRequired,
@@ -1262,7 +1267,14 @@ func (api *SystemAPI) UpdateSettings(c *gin.Context) {
 			return
 		}
 	}
-	for key, value := range map[string]*string{"registration_email_suffixes": input.RegistrationEmailSuffixes, "registration_email_routing": input.RegistrationEmailRouting} {
+	if input.NewUserGiftCredit != nil {
+		gift, err := decimal.NewFromString(strings.TrimSpace(*input.NewUserGiftCredit))
+		if err != nil || gift.IsNegative() {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "New user gift credit must be a non-negative number"})
+			return
+		}
+	}
+	for key, value := range map[string]*string{"new_user_gift_credit": input.NewUserGiftCredit, "registration_email_suffixes": input.RegistrationEmailSuffixes, "registration_email_routing": input.RegistrationEmailRouting} {
 		if value != nil {
 			if err := model.SetSystemSetting(key, strings.TrimSpace(*value)); err != nil {
 				c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to update registration rules"})
@@ -1397,6 +1409,8 @@ func currentPublicSystemSettings() systemSettingsResponse {
 		PasswordHCaptchaEnabled:              settingBool("password_hcaptcha_enabled", false),
 		HCaptchaSiteKey:                      settingString("hcaptcha_site_key", ""),
 		EmailVerificationRequired:            settingBool("email_verification_required", false),
+		NotificationsEnabled:                 settingBool("notifications_enabled", false),
+		NewUserGiftCredit:                    settingString("new_user_gift_credit", "0"),
 		SMSEnabled:                           service.PhoneAuthEnabled(),
 		SMSLoginEnabled:                      service.SMSLoginEnabled(),
 		SMSBindingRequired:                   service.SMSBindingRequired(),
@@ -4563,6 +4577,7 @@ type apiKeyResponse struct {
 	QuotaLimit          decimal.Decimal  `json:"quota_limit"`
 	QuotaRemaining      *decimal.Decimal `json:"quota_remaining,omitempty"`
 	Enabled             bool             `json:"enabled"`
+	ExpiresAt           *time.Time       `json:"expires_at,omitempty"`
 	Usage               usageStats       `json:"usage"`
 	LastUsedAt          *time.Time       `json:"last_used_at"`
 	UsageResetAt        *time.Time       `json:"usage_reset_at"`
@@ -4586,6 +4601,8 @@ type apiKeyInput struct {
 	AllowedIPs          []string         `json:"allowed_ips"`
 	QuotaLimit          *decimal.Decimal `json:"quota_limit"`
 	Enabled             *bool            `json:"enabled"`
+	ExpiresAt           *time.Time       `json:"expires_at"`
+	ClearExpiration     bool             `json:"clear_expiration"`
 }
 
 const maxUserAvatarBytes int64 = 2 << 20
@@ -4602,6 +4619,63 @@ func (api *UserAPI) GetMe(c *gin.Context) {
 		return
 	}
 	c.JSON(http.StatusOK, response)
+}
+
+func (api *UserAPI) GetNotificationSettings(c *gin.Context) {
+	user, ok := currentUser(c)
+	if !ok {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "Unauthorized"})
+		return
+	}
+	settings := model.UserNotificationSettings{UserID: user.ID, EmailEnabled: true}
+	if err := model.DB.Where("user_id = ?", user.ID).Attrs(settings).FirstOrCreate(&settings).Error; err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to load notification settings"})
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"enabled": service.NotificationsEnabled(), "settings": settings, "email": user.Email})
+}
+
+func (api *UserAPI) UpdateNotificationSettings(c *gin.Context) {
+	user, ok := currentUser(c)
+	if !ok {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "Unauthorized"})
+		return
+	}
+	if !service.NotificationsEnabled() {
+		c.JSON(http.StatusForbidden, gin.H{"error": "Notifications are disabled"})
+		return
+	}
+	var input struct {
+		EmailEnabled               bool            `json:"email_enabled"`
+		WebhookURL                 string          `json:"webhook_url"`
+		LowBalanceEnabled          bool            `json:"low_balance_enabled"`
+		LowBalanceThreshold        decimal.Decimal `json:"low_balance_threshold"`
+		APIKeyExpiredEnabled       bool            `json:"api_key_expired_enabled"`
+		SubscriptionResetEnabled   bool            `json:"subscription_reset_enabled"`
+		SubscriptionExpiredEnabled bool            `json:"subscription_expired_enabled"`
+	}
+	if err := c.ShouldBindJSON(&input); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid notification settings"})
+		return
+	}
+	webhookURL := strings.TrimSpace(input.WebhookURL)
+	if len(webhookURL) > 1000 || input.LowBalanceThreshold.IsNegative() {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid notification settings"})
+		return
+	}
+	if webhookURL != "" {
+		if err := service.ValidateConfiguredHTTPURL(webhookURL); err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid webhook URL: " + err.Error()})
+			return
+		}
+	}
+	settings := model.UserNotificationSettings{UserID: user.ID}
+	updates := map[string]interface{}{"email_enabled": input.EmailEnabled, "webhook_url": webhookURL, "low_balance_enabled": input.LowBalanceEnabled, "low_balance_threshold": input.LowBalanceThreshold, "api_key_expired_enabled": input.APIKeyExpiredEnabled, "subscription_reset_enabled": input.SubscriptionResetEnabled, "subscription_expired_enabled": input.SubscriptionExpiredEnabled}
+	if err := model.DB.Where("user_id = ?", user.ID).Assign(updates).FirstOrCreate(&settings).Error; err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to save notification settings"})
+		return
+	}
+	c.JSON(http.StatusOK, settings)
 }
 
 func (api *UserAPI) UploadAvatar(c *gin.Context) {
@@ -4945,6 +5019,10 @@ func (api *UserAPI) CreateAPIKey(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 		return
 	}
+	if err := validateAPIKeyExpiration(input.ExpiresAt); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
 
 	raw, hash, err := service.GenerateAPIKey()
 	if err != nil {
@@ -4966,6 +5044,7 @@ func (api *UserAPI) CreateAPIKey(c *gin.Context) {
 		AllowedUserChannels: service.JoinOrderedUintList(userChannelIDs),
 		AllowedIPs:          service.JoinList(input.AllowedIPs),
 		QuotaLimit:          quotaLimit,
+		ExpiresAt:           input.ExpiresAt,
 		Enabled:             enabled,
 	}
 	if err := model.DB.Create(&apiKey).Error; err != nil {
@@ -5019,6 +5098,15 @@ func (api *UserAPI) UpdateAPIKey(c *gin.Context) {
 	}
 	if input.Enabled != nil {
 		updates["enabled"] = *input.Enabled
+	}
+	if input.ClearExpiration {
+		updates["expires_at"] = nil
+	} else if input.ExpiresAt != nil {
+		if err := validateAPIKeyExpiration(input.ExpiresAt); err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+			return
+		}
+		updates["expires_at"] = input.ExpiresAt
 	}
 
 	if err := model.DB.Model(&apiKey).Updates(updates).Error; err != nil {
@@ -5803,6 +5891,7 @@ func toAPIKeyResponse(apiKey model.APIKey) apiKeyResponse {
 		AllowedIPs:          service.ParseList(apiKey.AllowedIPs),
 		QuotaLimit:          apiKey.QuotaLimit,
 		Enabled:             apiKey.Enabled,
+		ExpiresAt:           apiKey.ExpiresAt,
 		Usage:               usage,
 		LastUsedAt:          apiKey.LastUsedAt,
 		UsageResetAt:        apiKey.UsageResetAt,
@@ -5878,6 +5967,13 @@ func validateAPIKeyQuotaLimit(value *decimal.Decimal) (decimal.Decimal, error) {
 		return decimal.Zero, errors.New("API key quota limit cannot be negative")
 	}
 	return *value, nil
+}
+
+func validateAPIKeyExpiration(value *time.Time) error {
+	if value != nil && !value.After(time.Now()) {
+		return errors.New("API key expiration must be in the future")
+	}
+	return nil
 }
 
 func firstNonEmptyString(values ...string) string {
