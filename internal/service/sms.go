@@ -2,6 +2,7 @@ package service
 
 import (
 	"crypto/hmac"
+	"crypto/md5"
 	"crypto/rand"
 	"crypto/sha1"
 	"crypto/sha256"
@@ -25,6 +26,7 @@ import (
 const (
 	smsProviderAliyun  = "aliyun"
 	smsProviderTencent = "tencent"
+	smsProviderBao     = "smsbao"
 )
 
 var phonePattern = regexp.MustCompile(`^1[3-9]\d{9}$`)
@@ -64,6 +66,10 @@ func smsConfigured() bool {
 			strings.TrimSpace(model.GetSystemSetting("sms_tencent_sdk_app_id", "")) != "" &&
 			strings.TrimSpace(model.GetSystemSetting("sms_tencent_sign_name", "")) != "" &&
 			strings.TrimSpace(model.GetSystemSetting("sms_tencent_template_id", "")) != ""
+	case smsProviderBao:
+		return strings.TrimSpace(model.GetSystemSetting("sms_smsbao_username", "")) != "" &&
+			strings.TrimSpace(model.GetSystemSetting("sms_smsbao_password", "")) != "" &&
+			strings.TrimSpace(model.GetSystemSetting("sms_smsbao_sign_name", "")) != ""
 	}
 	return false
 }
@@ -80,8 +86,56 @@ func sendSMSCode(phone string, code string) error {
 		return sendAliyunSMSCode(phone, code)
 	case smsProviderTencent:
 		return sendTencentSMSCode(phone, code)
+	case smsProviderBao:
+		return sendSMSBaoCode(phone, code)
 	}
 	return errors.New("SMS provider is not configured")
+}
+
+// sendSMSBaoCode uses SMSBao's simple HTTP API. Its password parameter is the
+// MD5 digest of the account password and the message must include the approved
+// signature in full-width brackets.
+func sendSMSBaoCode(phone string, code string) error {
+	username := strings.TrimSpace(model.GetSystemSetting("sms_smsbao_username", ""))
+	password := strings.TrimSpace(model.GetSystemSetting("sms_smsbao_password", ""))
+	signName := strings.TrimSpace(model.GetSystemSetting("sms_smsbao_sign_name", ""))
+	template := model.GetSystemSetting("sms_smsbao_template", "您的验证码是：{code}，5分钟内有效。")
+	if username == "" || password == "" || signName == "" {
+		return errors.New("SMSBao is not configured")
+	}
+	template = strings.TrimSpace(template)
+	if template == "" {
+		template = "您的验证码是：{code}，5分钟内有效。"
+	}
+	content := strings.ReplaceAll(template, "{code}", code)
+	if !strings.HasPrefix(content, "【") {
+		content = "【" + signName + "】" + content
+	}
+	sum := md5.Sum([]byte(password))
+	values := url.Values{}
+	values.Set("u", username)
+	values.Set("p", hex.EncodeToString(sum[:]))
+	values.Set("m", phone)
+	values.Set("c", content)
+	requestURL := "https://api.smsbao.com/sms?" + values.Encode()
+	resp, err := smsHTTPClient.Get(requestURL)
+	if err != nil {
+		return fmt.Errorf("send SMSBao SMS: %w", err)
+	}
+	defer resp.Body.Close()
+	body, _ := io.ReadAll(io.LimitReader(resp.Body, 64))
+	result := strings.TrimSpace(string(body))
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return fmt.Errorf("SMSBao SMS failed: HTTP %d", resp.StatusCode)
+	}
+	if result != "0" {
+		messages := map[string]string{"30": "密码错误", "40": "账号不存在", "41": "余额不足", "42": "帐号过期", "43": "IP地址限制", "44": "内容审查失败", "45": "内容长度超限", "54": "手机号格式错误"}
+		if message := messages[result]; message != "" {
+			return fmt.Errorf("SMSBao SMS failed: %s (%s)", message, result)
+		}
+		return fmt.Errorf("SMSBao SMS failed: code %s", result)
+	}
+	return nil
 }
 
 var smsHTTPClient = &http.Client{Timeout: 10 * time.Second}

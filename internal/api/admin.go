@@ -49,6 +49,7 @@ var sensitiveSystemSettingKeys = map[string]struct{}{
 	"smtp_password":                       {},
 	"sms_aliyun_access_key_secret":        {},
 	"sms_tencent_secret_key":              {},
+	"sms_smsbao_password":                 {},
 	"oidc_client_secret":                  {},
 	"payment_yipay_key":                   {},
 	"payment_openpayment_key":             {},
@@ -323,6 +324,10 @@ type systemSettingsResponse struct {
 	SMSTencentSignName                   string `json:"sms_tencent_sign_name,omitempty"`
 	SMSTencentTemplateID                 string `json:"sms_tencent_template_id,omitempty"`
 	SMSTencentRegion                     string `json:"sms_tencent_region,omitempty"`
+	SMSSMSBaoUsername                    string `json:"sms_smsbao_username,omitempty"`
+	SMSSMSBaoPassword                    string `json:"sms_smsbao_password,omitempty"`
+	SMSSMSBaoSignName                    string `json:"sms_smsbao_sign_name,omitempty"`
+	SMSSMSBaoTemplate                    string `json:"sms_smsbao_template,omitempty"`
 	OIDCIssuer                           string `json:"oidc_issuer,omitempty"`
 	OIDCClientID                         string `json:"oidc_client_id,omitempty"`
 	OIDCClientSecret                     string `json:"oidc_client_secret,omitempty"`
@@ -506,6 +511,10 @@ type systemSettingsInput struct {
 	SMSTencentSignName                   *string `json:"sms_tencent_sign_name"`
 	SMSTencentTemplateID                 *string `json:"sms_tencent_template_id"`
 	SMSTencentRegion                     *string `json:"sms_tencent_region"`
+	SMSSMSBaoUsername                    *string `json:"sms_smsbao_username"`
+	SMSSMSBaoPassword                    *string `json:"sms_smsbao_password"`
+	SMSSMSBaoSignName                    *string `json:"sms_smsbao_sign_name"`
+	SMSSMSBaoTemplate                    *string `json:"sms_smsbao_template"`
 	OIDCIssuer                           *string `json:"oidc_issuer"`
 	OIDCClientID                         *string `json:"oidc_client_id"`
 	OIDCClientSecret                     *string `json:"oidc_client_secret"`
@@ -1148,6 +1157,10 @@ func (api *SystemAPI) UpdateSettings(c *gin.Context) {
 		"sms_tencent_sign_name":                    input.SMSTencentSignName,
 		"sms_tencent_template_id":                  input.SMSTencentTemplateID,
 		"sms_tencent_region":                       input.SMSTencentRegion,
+		"sms_smsbao_username":                      input.SMSSMSBaoUsername,
+		"sms_smsbao_password":                      input.SMSSMSBaoPassword,
+		"sms_smsbao_sign_name":                     input.SMSSMSBaoSignName,
+		"sms_smsbao_template":                      input.SMSSMSBaoTemplate,
 		"redis_address":                            input.RedisAddress,
 		"redis_username":                           input.RedisUsername,
 		"node_address_mode":                        input.NodeAddressMode,
@@ -1416,6 +1429,9 @@ func currentAdminSystemSettings() systemSettingsResponse {
 	settings.SMSTencentSignName = settingString("sms_tencent_sign_name", "")
 	settings.SMSTencentTemplateID = settingString("sms_tencent_template_id", "")
 	settings.SMSTencentRegion = settingString("sms_tencent_region", "ap-guangzhou")
+	settings.SMSSMSBaoUsername = settingString("sms_smsbao_username", "")
+	settings.SMSSMSBaoSignName = settingString("sms_smsbao_sign_name", "")
+	settings.SMSSMSBaoTemplate = settingString("sms_smsbao_template", "您的验证码是：{code}，5分钟内有效。")
 	settings.SSRFAllowedHosts = settingString("ssrf_allowed_hosts", "")
 	settings.PaymentYipayGatewayURL = settingString("payment_yipay_gateway_url", "")
 	settings.PaymentChannels = redactPaymentChannelSecrets(settingString("payment_channels", "[]"))
