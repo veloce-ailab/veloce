@@ -3357,11 +3357,43 @@ func completionRatios(inputPrices map[string]decimal.Decimal, outputPrices map[s
 
 func (api *ModelAPI) List(c *gin.Context) {
 	var models []model.Model
-	if err := model.DB.Order("model_name ASC").Find(&models).Error; err != nil {
+	query := model.DB.Model(&model.Model{})
+	if search := strings.TrimSpace(c.Query("search")); search != "" {
+		query = query.Where("LOWER(model_name) LIKE ? OR LOWER(provider) LIKE ?", "%"+strings.ToLower(search)+"%", "%"+strings.ToLower(search)+"%")
+	}
+	if provider := strings.TrimSpace(c.Query("provider")); provider != "" {
+		query = query.Where("provider = ?", provider)
+	}
+	if quotaType := strings.TrimSpace(c.Query("quota_type")); quotaType != "" {
+		query = query.Where("quota_type = ?", quotaType)
+	}
+	if enabled := strings.TrimSpace(c.Query("enabled")); enabled == "true" || enabled == "false" {
+		query = query.Where("enabled = ?", enabled == "true")
+	}
+	query = applyTableQuery(query, c, modelTableColumns, "model_name ASC")
+	if !wantsPaginatedResponse(c) {
+		if err := query.Find(&models).Error; err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to list models"})
+			return
+		}
+		c.JSON(http.StatusOK, models)
+		return
+	}
+	page, pageSize := parsePagination(c)
+	var total int64
+	if err := query.Count(&total).Error; err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to count models"})
+		return
+	}
+	if err := query.Offset((page - 1) * pageSize).Limit(pageSize).Find(&models).Error; err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to list models"})
 		return
 	}
-	c.JSON(http.StatusOK, models)
+	c.JSON(http.StatusOK, paginatedResponse{Items: models, Total: total, Page: page, PageSize: pageSize})
+}
+
+var modelTableColumns = map[string]string{
+	"cached_input_price": "cached_input_price", "enabled": "enabled", "input_price": "input_price", "model_name": "model_name", "output_price": "output_price", "provider": "provider", "quota_type": "quota_type",
 }
 
 func (api *ModelAPI) Sync(c *gin.Context) {
@@ -5196,8 +5228,49 @@ func (api *UserAPI) BulkAPIKeys(c *gin.Context) {
 
 func (api *UserAPI) List(c *gin.Context) {
 	var users []model.User
-	loadUserForResponse(0).Order("created_at DESC").Find(&users)
-	c.JSON(http.StatusOK, users)
+	query := loadUserForResponse(0)
+	if search := strings.TrimSpace(c.Query("search")); search != "" {
+		pattern := "%" + strings.ToLower(search) + "%"
+		if id, err := strconv.ParseUint(search, 10, 0); err == nil {
+			query = query.Where("LOWER(username) LIKE ? OR LOWER(email) LIKE ? OR id = ?", pattern, pattern, uint(id))
+		} else {
+			query = query.Where("LOWER(username) LIKE ? OR LOWER(email) LIKE ?", pattern, pattern)
+		}
+	}
+	if role := strings.TrimSpace(c.Query("role")); role != "" {
+		if role == "super_admin" {
+			query = query.Where("is_admin = ?", true)
+		} else {
+			query = query.Where("role = ? AND is_admin = ?", role, false)
+		}
+	}
+	if status := strings.TrimSpace(c.Query("status")); status == "active" || status == "disabled" {
+		query = query.Where("is_disabled = ?", status == "disabled")
+	}
+	query = applyTableQuery(query, c, userTableColumns, "created_at DESC")
+	if !wantsPaginatedResponse(c) {
+		if err := query.Find(&users).Error; err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to list users"})
+			return
+		}
+		c.JSON(http.StatusOK, users)
+		return
+	}
+	page, pageSize := parsePagination(c)
+	var total int64
+	if err := query.Count(&total).Error; err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to count users"})
+		return
+	}
+	if err := query.Offset((page - 1) * pageSize).Limit(pageSize).Find(&users).Error; err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to list users"})
+		return
+	}
+	c.JSON(http.StatusOK, paginatedResponse{Items: users, Total: total, Page: page, PageSize: pageSize})
+}
+
+var userTableColumns = map[string]string{
+	"balance": "balance", "created_at": "created_at", "email": "email", "group_id": "group_id", "id": "id", "is_disabled": "is_disabled", "role": "role", "username": "username",
 }
 
 func (api *UserAPI) Create(c *gin.Context) {
@@ -5688,6 +5761,8 @@ func tokenLogFilterFromRequest(c *gin.Context, userID *uint) (model.TokenLogFilt
 		filter.ChannelID = &parsed
 	}
 	filter.ModelName = strings.TrimSpace(c.Query("model_name"))
+	filter.SortBy, filter.SortDesc = tableSort(c, tokenLogTableColumns)
+	filter.TableFilters = tableFilterMap(c, tokenLogTableColumns)
 	return filter, applyLogTimeRange(c, &filter.Since, &filter.Until)
 }
 
@@ -5702,7 +5777,17 @@ func auditLogFilterFromRequest(c *gin.Context) (model.AuditLogFilter, error) {
 		parsed := uint(value)
 		filter.UserID = &parsed
 	}
+	filter.SortBy, filter.SortDesc = tableSort(c, auditLogTableColumns)
+	filter.TableFilters = tableFilterMap(c, auditLogTableColumns)
 	return filter, applyLogTimeRange(c, &filter.Since, &filter.Until)
+}
+
+var tokenLogTableColumns = map[string]string{
+	"api_key_id": "api_key_id", "channel_id": "channel_id", "cost": "cost", "created_at": "created_at", "group_multiplier": "group_multiplier", "input_price": "input_price", "model_name": "model_name", "pricing_formula": "pricing_formula", "response_time_ms": "response_time_ms", "total_tokens": "input_tokens + output_tokens", "user_id": "user_id",
+}
+
+var auditLogTableColumns = map[string]string{
+	"action": "action", "created_at": "created_at", "duration_ms": "duration_ms", "ip_address": "ip_address", "log_type": "log_type", "message": "message", "path": "path", "status_code": "status_code", "user_id": "user_id",
 }
 
 func applyLogTimeRange(c *gin.Context, since, until **time.Time) error {

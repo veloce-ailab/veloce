@@ -29,7 +29,64 @@ func wantsPaginatedResponse(c *gin.Context) bool {
 			return true
 		}
 	}
+	for key := range c.Request.URL.Query() {
+		if key == "sort_by" || key == "sort_order" || strings.HasPrefix(key, "filter_") {
+			return true
+		}
+	}
 	return false
+}
+
+// applyTableQuery only accepts columns supplied by the caller's whitelist.
+// This keeps table sorting and filtering from ever becoming raw SQL input.
+func applyTableQuery(query *gorm.DB, c *gin.Context, columns map[string]string, defaultOrder string) *gorm.DB {
+	for key, values := range tableFilterMap(c, columns) {
+		if column := columns[key]; len(values) > 0 {
+			query = query.Where(column+" IN ?", values)
+		}
+	}
+	order := defaultOrder
+	if sortBy, sortDesc := tableSort(c, columns); sortBy != "" {
+		column := columns[sortBy]
+		direction := "ASC"
+		if sortDesc {
+			direction = "DESC"
+		}
+		order = column + " " + direction
+	}
+	return query.Order(order)
+}
+
+func tableSort(c *gin.Context, columns map[string]string) (string, bool) {
+	key := strings.TrimSpace(c.Query("sort_by"))
+	if _, ok := columns[key]; !ok {
+		return "", false
+	}
+	return key, strings.EqualFold(strings.TrimSpace(c.Query("sort_order")), "desc")
+}
+
+func tableFilterMap(c *gin.Context, columns map[string]string) map[string][]string {
+	filters := make(map[string][]string)
+	for key := range columns {
+		if values := tableFilterValues(c, key); len(values) > 0 {
+			filters[key] = values
+		}
+	}
+	return filters
+}
+
+func tableFilterValues(c *gin.Context, key string) []string {
+	raw := strings.TrimSpace(c.Query("filter_" + key))
+	if raw == "" {
+		return nil
+	}
+	values := make([]string, 0)
+	for _, value := range strings.Split(raw, ",") {
+		if value = strings.TrimSpace(value); value != "" && len(values) < 50 {
+			values = append(values, value)
+		}
+	}
+	return values
 }
 
 func parsePagination(c *gin.Context) (int, int) {

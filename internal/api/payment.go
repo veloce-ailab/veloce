@@ -246,8 +246,9 @@ func (api *PaymentAPI) ListOrders(c *gin.Context) {
 	if writePaginationError(c, err) {
 		return
 	}
+	query = applyTableQuery(query, c, paymentTableColumns, "created_at DESC")
 	if !wantsPaginatedResponse(c) {
-		if err := query.Order("created_at DESC").Limit(100).Find(&orders).Error; err != nil {
+		if err := query.Limit(100).Find(&orders).Error; err != nil {
 			c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to load payment orders"})
 			return
 		}
@@ -265,7 +266,7 @@ func (api *PaymentAPI) ListOrders(c *gin.Context) {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to count payment orders"})
 		return
 	}
-	if err := query.Order("created_at DESC").Offset((page - 1) * pageSize).Limit(pageSize).Find(&orders).Error; err != nil {
+	if err := query.Offset((page - 1) * pageSize).Limit(pageSize).Find(&orders).Error; err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to load payment orders"})
 		return
 	}
@@ -274,6 +275,10 @@ func (api *PaymentAPI) ListOrders(c *gin.Context) {
 		response = append(response, toPaymentOrderResponse(order))
 	}
 	c.JSON(http.StatusOK, paginatedResponse{Items: response, Total: total, Page: page, PageSize: pageSize})
+}
+
+var paymentTableColumns = map[string]string{
+	"amount": "amount", "created_at": "created_at", "method": "method", "order_no": "order_no", "paid_at": "paid_at", "rmb_amount": "rmb_amount", "status": "status",
 }
 
 func (api *PaymentAPI) GetOrder(c *gin.Context) {

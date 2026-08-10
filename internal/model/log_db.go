@@ -257,6 +257,9 @@ type TokenLogFilter struct {
 	ModelName     string
 	Since         *time.Time
 	Until         *time.Time
+	SortBy        string
+	SortDesc      bool
+	TableFilters  map[string][]string
 }
 
 type TokenLogSummary struct {
@@ -287,12 +290,12 @@ func ListTokenLogs(filter TokenLogFilter, offset, limit int) ([]TokenLog, int64,
 		}
 		total += count
 		var batch []TokenLog
-		if err := query.Order("created_at DESC").Limit(perDatabaseLimit).Find(&batch).Error; err != nil {
+		if err := query.Order(tokenLogOrder(filter)).Limit(perDatabaseLimit).Find(&batch).Error; err != nil {
 			return nil, 0, err
 		}
 		all = append(all, batch...)
 	}
-	sort.Slice(all, func(left, right int) bool { return all[left].CreatedAt.After(all[right].CreatedAt) })
+	sort.Slice(all, func(left, right int) bool { return compareTokenLogs(all[left], all[right], filter) < 0 })
 	if offset >= len(all) {
 		return []TokenLog{}, total, nil
 	}
@@ -346,7 +349,63 @@ func applyTokenLogFilter(query *gorm.DB, filter TokenLogFilter) *gorm.DB {
 	if filter.Until != nil {
 		query = query.Where("created_at <= ?", *filter.Until)
 	}
+	for key, values := range filter.TableFilters {
+		if column, ok := tokenLogTableColumns[key]; ok && len(values) > 0 {
+			query = query.Where(column+" IN ?", values)
+		}
+	}
 	return query
+}
+
+var tokenLogTableColumns = map[string]string{
+	"api_key_id": "api_key_id", "channel_id": "channel_id", "cost": "cost", "created_at": "created_at", "group_multiplier": "group_multiplier", "input_price": "input_price", "model_name": "model_name", "pricing_formula": "pricing_formula", "response_time_ms": "response_time_ms", "total_tokens": "input_tokens + output_tokens", "user_id": "user_id",
+}
+
+func tokenLogOrder(filter TokenLogFilter) string {
+	column, ok := tokenLogTableColumns[filter.SortBy]
+	if !ok {
+		column = "created_at"
+	}
+	direction := "ASC"
+	if filter.SortBy == "" || filter.SortDesc {
+		direction = "DESC"
+	}
+	return column + " " + direction
+}
+
+func compareTokenLogs(left, right TokenLog, filter TokenLogFilter) int {
+	var comparison int
+	switch filter.SortBy {
+	case "api_key_id":
+		comparison = compareUintPointers(left.APIKeyID, right.APIKeyID)
+	case "channel_id":
+		comparison = compareUint(left.ChannelID, right.ChannelID)
+	case "cost":
+		comparison = left.Cost.Cmp(right.Cost)
+	case "group_multiplier":
+		comparison = left.GroupMultiplier.Cmp(right.GroupMultiplier)
+	case "input_price":
+		comparison = left.InputPrice.Cmp(right.InputPrice)
+	case "model_name":
+		comparison = strings.Compare(left.ModelName, right.ModelName)
+	case "pricing_formula":
+		comparison = strings.Compare(left.PricingFormula, right.PricingFormula)
+	case "response_time_ms":
+		comparison = compareInt64(left.ResponseTimeMs, right.ResponseTimeMs)
+	case "total_tokens":
+		comparison = compareInt64(int64(left.InputTokens)+int64(left.OutputTokens), int64(right.InputTokens)+int64(right.OutputTokens))
+	case "user_id":
+		comparison = compareUint(left.UserID, right.UserID)
+	default:
+		comparison = compareTime(left.CreatedAt, right.CreatedAt)
+	}
+	if comparison == 0 {
+		comparison = compareUint(left.ID, right.ID)
+	}
+	if filter.SortBy == "" || filter.SortDesc {
+		return -comparison
+	}
+	return comparison
 }
 
 type ScheduledTaskRunFilter struct {
@@ -398,13 +457,16 @@ func ListScheduledTaskRuns(filter ScheduledTaskRunFilter, offset, limit int) ([]
 }
 
 type AuditLogFilter struct {
-	LogType    string
-	Action     string
-	Path       string
-	UserID     *uint
-	StatusCode int
-	Since      *time.Time
-	Until      *time.Time
+	LogType      string
+	Action       string
+	Path         string
+	UserID       *uint
+	StatusCode   int
+	Since        *time.Time
+	Until        *time.Time
+	SortBy       string
+	SortDesc     bool
+	TableFilters map[string][]string
 }
 
 func ListAuditLogs(filter AuditLogFilter, offset, limit int) ([]AuditLog, int64, error) {
@@ -426,12 +488,12 @@ func ListAuditLogs(filter AuditLogFilter, offset, limit int) ([]AuditLog, int64,
 		}
 		total += count
 		var batch []AuditLog
-		if err := query.Order("created_at DESC").Limit(perDatabaseLimit).Find(&batch).Error; err != nil {
+		if err := query.Order(auditLogOrder(filter)).Limit(perDatabaseLimit).Find(&batch).Error; err != nil {
 			return nil, 0, err
 		}
 		all = append(all, batch...)
 	}
-	sort.Slice(all, func(left, right int) bool { return all[left].CreatedAt.After(all[right].CreatedAt) })
+	sort.Slice(all, func(left, right int) bool { return compareAuditLogs(all[left], all[right], filter) < 0 })
 	if offset >= len(all) {
 		return []AuditLog{}, total, nil
 	}
@@ -464,5 +526,106 @@ func applyAuditLogFilter(query *gorm.DB, filter AuditLogFilter) *gorm.DB {
 	if filter.Until != nil {
 		query = query.Where("created_at <= ?", *filter.Until)
 	}
+	for key, values := range filter.TableFilters {
+		if column, ok := auditLogTableColumns[key]; ok && len(values) > 0 {
+			query = query.Where(column+" IN ?", values)
+		}
+	}
 	return query
+}
+
+var auditLogTableColumns = map[string]string{
+	"action": "action", "created_at": "created_at", "duration_ms": "duration_ms", "ip_address": "ip_address", "log_type": "log_type", "message": "message", "path": "path", "status_code": "status_code", "user_id": "user_id",
+}
+
+func auditLogOrder(filter AuditLogFilter) string {
+	column, ok := auditLogTableColumns[filter.SortBy]
+	if !ok {
+		column = "created_at"
+	}
+	direction := "ASC"
+	if filter.SortBy == "" || filter.SortDesc {
+		direction = "DESC"
+	}
+	return column + " " + direction
+}
+
+func compareAuditLogs(left, right AuditLog, filter AuditLogFilter) int {
+	var comparison int
+	switch filter.SortBy {
+	case "action":
+		comparison = strings.Compare(left.Action, right.Action)
+	case "duration_ms":
+		comparison = compareInt64(left.DurationMs, right.DurationMs)
+	case "ip_address":
+		comparison = strings.Compare(left.IPAddress, right.IPAddress)
+	case "log_type":
+		comparison = strings.Compare(left.LogType, right.LogType)
+	case "message":
+		comparison = strings.Compare(left.Message, right.Message)
+	case "path":
+		comparison = strings.Compare(left.Path, right.Path)
+	case "status_code":
+		comparison = compareInt(left.StatusCode, right.StatusCode)
+	case "user_id":
+		comparison = compareUintPointers(left.UserID, right.UserID)
+	default:
+		comparison = compareTime(left.CreatedAt, right.CreatedAt)
+	}
+	if comparison == 0 {
+		comparison = compareUint(left.ID, right.ID)
+	}
+	if filter.SortBy == "" || filter.SortDesc {
+		return -comparison
+	}
+	return comparison
+}
+
+func compareTime(left, right time.Time) int {
+	if left.Before(right) {
+		return -1
+	}
+	if left.After(right) {
+		return 1
+	}
+	return 0
+}
+func compareUint(left, right uint) int {
+	if left < right {
+		return -1
+	}
+	if left > right {
+		return 1
+	}
+	return 0
+}
+func compareUintPointers(left, right *uint) int {
+	if left == nil {
+		if right == nil {
+			return 0
+		}
+		return -1
+	}
+	if right == nil {
+		return 1
+	}
+	return compareUint(*left, *right)
+}
+func compareInt(left, right int) int {
+	if left < right {
+		return -1
+	}
+	if left > right {
+		return 1
+	}
+	return 0
+}
+func compareInt64(left, right int64) int {
+	if left < right {
+		return -1
+	}
+	if left > right {
+		return 1
+	}
+	return 0
 }

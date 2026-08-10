@@ -10,9 +10,9 @@ import (
 	"strings"
 	"time"
 
-	"github.com/veloce-ailab/veloce/internal/model"
 	"github.com/gin-gonic/gin"
 	"github.com/shopspring/decimal"
+	"github.com/veloce-ailab/veloce/internal/model"
 	"gorm.io/gorm"
 )
 
@@ -122,8 +122,9 @@ func (api *CheckInAPI) ListRecords(c *gin.Context) {
 	if writePaginationError(c, err) {
 		return
 	}
+	query = applyTableQuery(query, c, checkInRecordTableColumns, "check_in_date DESC")
 	if !wantsPaginatedResponse(c) {
-		if err := query.Order("check_in_date DESC").Limit(100).Find(&records).Error; err != nil {
+		if err := query.Limit(100).Find(&records).Error; err != nil {
 			c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to load check-in records"})
 			return
 		}
@@ -146,7 +147,7 @@ func (api *CheckInAPI) ListRecords(c *gin.Context) {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to count check-in records"})
 		return
 	}
-	if err := query.Order("check_in_date DESC").Offset((page - 1) * pageSize).Limit(pageSize).Find(&records).Error; err != nil {
+	if err := query.Offset((page - 1) * pageSize).Limit(pageSize).Find(&records).Error; err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to load check-in records"})
 		return
 	}
@@ -160,6 +161,10 @@ func (api *CheckInAPI) ListRecords(c *gin.Context) {
 		})
 	}
 	c.JSON(http.StatusOK, paginatedResponse{Items: briefs, Total: total, Page: page, PageSize: pageSize})
+}
+
+var checkInRecordTableColumns = map[string]string{
+	"check_in_date": "check_in_date", "reward_amount": "reward_amount", "reward_kind": "reward_kind", "streak_days": "streak_days",
 }
 
 func (api *CheckInAPI) Claim(c *gin.Context) {
