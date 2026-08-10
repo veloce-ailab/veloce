@@ -868,7 +868,7 @@ func Run() error {
 	}
 
 	adminTickets := r.Group("/api/admin")
-	adminTickets.Use(middleware.AuthMiddleware(authService), middleware.AdminMiddleware())
+	adminTickets.Use(middleware.AuthMiddleware(authService), middleware.StaffMiddleware())
 	service.RegisterTicketAdminRoutes(adminTickets)
 
 	// User Self APIs

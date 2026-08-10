@@ -1,13 +1,14 @@
 package service
 
 import (
+	"errors"
 	"net/http"
 	"strconv"
 	"strings"
 	"time"
 
-	"github.com/veloce-ailab/veloce/internal/model"
 	"github.com/gin-gonic/gin"
+	"github.com/veloce-ailab/veloce/internal/model"
 	"gorm.io/gorm"
 )
 
@@ -67,11 +68,16 @@ func RegisterTicketAdminRoutes(group *gin.RouterGroup) {
 	group.GET("/tickets/:id", api.getAdmin)
 	group.PATCH("/tickets/:id", api.update)
 	group.POST("/tickets/:id/messages", api.addAdminMessage)
+	group.GET("/ticket-categories", api.listCategories)
+	group.POST("/ticket-categories", api.createCategory)
+	group.PUT("/ticket-categories/:id", api.updateCategory)
+	group.DELETE("/ticket-categories/:id", api.deleteCategory)
 }
 
 // RegisterTicketUserRoutes exposes a requester's own support tickets.
 func RegisterTicketUserRoutes(group *gin.RouterGroup) {
 	api := &ticketAPI{}
+	group.GET("/ticket-categories", api.listPublicCategories)
 	group.GET("/tickets", api.listMine)
 	group.POST("/tickets", api.create)
 	group.GET("/tickets/:id", api.getMine)
@@ -120,7 +126,11 @@ func (api *ticketAPI) create(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "Subject must be 1-160 characters and content must be 1-5000 characters"})
 		return
 	}
-	category := normalizedTicketCategory(input.Category)
+	category, err := normalizedTicketCategory(input.Category)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
 	priority := normalizedTicketPriority(input.Priority)
 	if err := verifyTicketHCaptcha(input.CaptchaToken); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
@@ -230,7 +240,7 @@ func (api *ticketAPI) addMessage(c *gin.Context, ticket model.Ticket, user *mode
 
 func (api *ticketAPI) update(c *gin.Context) {
 	user, ok := currentTicketUser(c)
-	if !ok || !user.IsAdmin {
+	if !ok || !model.IsStaffUser(user) {
 		c.JSON(http.StatusForbidden, gin.H{"error": "Administrator access is required"})
 		return
 	}
@@ -395,12 +405,138 @@ func ticketUserResponseFromModel(user *model.User) ticketUserResponse {
 	return ticketUserResponse{ID: user.ID, Username: user.Username, Email: user.Email}
 }
 
-func normalizedTicketCategory(value string) string {
-	value = strings.ToLower(strings.TrimSpace(value))
-	if value == "billing" || value == "account" || value == "technical" || value == "suggestion" {
-		return value
+func (api *ticketAPI) listPublicCategories(c *gin.Context) {
+	var categories []model.TicketCategory
+	if err := model.DB.Where("enabled = ?", true).Order("sort_order ASC, name ASC").Find(&categories).Error; err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to load ticket categories"})
+		return
 	}
-	return "general"
+	c.JSON(http.StatusOK, gin.H{"categories": categories})
+}
+
+func (api *ticketAPI) listCategories(c *gin.Context) {
+	user, ok := currentTicketUser(c)
+	if !ok || !canManageTicketCategories(user) {
+		c.JSON(http.StatusForbidden, gin.H{"error": "Administrator access is required"})
+		return
+	}
+	var categories []model.TicketCategory
+	if err := model.DB.Order("sort_order ASC, name ASC").Find(&categories).Error; err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to load ticket categories"})
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"categories": categories})
+}
+
+func (api *ticketAPI) createCategory(c *gin.Context) {
+	user, ok := currentTicketUser(c)
+	if !ok || !canManageTicketCategories(user) {
+		c.JSON(http.StatusForbidden, gin.H{"error": "Administrator access is required"})
+		return
+	}
+	var input struct {
+		Name      string `json:"name"`
+		Slug      string `json:"slug"`
+		SortOrder int    `json:"sort_order"`
+	}
+	if err := c.ShouldBindJSON(&input); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid ticket category"})
+		return
+	}
+	name := strings.TrimSpace(input.Name)
+	slug := model.NormalizeTicketCategorySlug(input.Slug)
+	if slug == "" {
+		slug = model.NormalizeTicketCategorySlug(name)
+	}
+	if slug == "" {
+		slug = "category-" + strconv.FormatInt(time.Now().UnixNano(), 10)
+	}
+	if name == "" || len([]rune(name)) > 100 {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Name is required"})
+		return
+	}
+	category := model.TicketCategory{Name: name, Slug: slug, Enabled: true, SortOrder: input.SortOrder}
+	if err := model.DB.Create(&category).Error; err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Ticket category already exists"})
+		return
+	}
+	c.JSON(http.StatusCreated, category)
+}
+
+func (api *ticketAPI) updateCategory(c *gin.Context) {
+	user, ok := currentTicketUser(c)
+	if !ok || !canManageTicketCategories(user) {
+		c.JSON(http.StatusForbidden, gin.H{"error": "Administrator access is required"})
+		return
+	}
+	var category model.TicketCategory
+	if err := model.DB.First(&category, c.Param("id")).Error; err != nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "Ticket category not found"})
+		return
+	}
+	var input struct {
+		Name      *string `json:"name"`
+		Enabled   *bool   `json:"enabled"`
+		SortOrder *int    `json:"sort_order"`
+	}
+	if err := c.ShouldBindJSON(&input); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid ticket category"})
+		return
+	}
+	updates := map[string]interface{}{}
+	if input.Name != nil {
+		name := strings.TrimSpace(*input.Name)
+		if name == "" || len([]rune(name)) > 100 {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "Valid name is required"})
+			return
+		}
+		updates["name"] = name
+	}
+	if input.Enabled != nil {
+		updates["enabled"] = *input.Enabled
+	}
+	if input.SortOrder != nil {
+		updates["sort_order"] = *input.SortOrder
+	}
+	if len(updates) == 0 {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "No category fields to update"})
+		return
+	}
+	if err := model.DB.Model(&category).Updates(updates).Error; err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to update ticket category"})
+		return
+	}
+	model.DB.First(&category, category.ID)
+	c.JSON(http.StatusOK, category)
+}
+
+func (api *ticketAPI) deleteCategory(c *gin.Context) {
+	user, ok := currentTicketUser(c)
+	if !ok || !canManageTicketCategories(user) {
+		c.JSON(http.StatusForbidden, gin.H{"error": "Administrator access is required"})
+		return
+	}
+	if err := model.DB.Delete(&model.TicketCategory{}, c.Param("id")).Error; err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to delete ticket category"})
+		return
+	}
+	c.Status(http.StatusNoContent)
+}
+
+func canManageTicketCategories(user *model.User) bool {
+	return user != nil && (user.IsAdmin || model.NormalizeUserRole(user.Role) == model.UserRoleAdmin)
+}
+
+func normalizedTicketCategory(value string) (string, error) {
+	slug := model.NormalizeTicketCategorySlug(value)
+	if slug == "" {
+		return "", errors.New("Ticket category is required")
+	}
+	var category model.TicketCategory
+	if err := model.DB.Where("slug = ? AND enabled = ?", slug, true).First(&category).Error; err != nil {
+		return "", errors.New("Ticket category is not available")
+	}
+	return category.Slug, nil
 }
 
 func normalizedTicketPriority(value string) string {

@@ -109,7 +109,7 @@ func AdminMiddleware() gin.HandlerFunc {
 			c.Abort()
 			return
 		}
-		if !user.IsAdmin {
+		if !canAccessAdminPath(user, c.Request.URL.Path) {
 			c.JSON(http.StatusForbidden, gin.H{"error": "Admin access required"})
 			c.Abort()
 			return
@@ -117,4 +117,50 @@ func AdminMiddleware() gin.HandlerFunc {
 
 		c.Next()
 	}
+}
+
+// StaffMiddleware grants access to staff-only routes that are not part of the
+// main administrative surface, such as the support queue.
+func StaffMiddleware() gin.HandlerFunc {
+	return func(c *gin.Context) {
+		user, ok := currentUserFromContext(c)
+		if !ok || !model.IsStaffUser(user) {
+			c.JSON(http.StatusForbidden, gin.H{"error": "Staff access required"})
+			c.Abort()
+			return
+		}
+		c.Next()
+	}
+}
+
+func currentUserFromContext(c *gin.Context) (*model.User, bool) {
+	value, exists := c.Get("user")
+	user, ok := value.(*model.User)
+	return user, exists && ok && user != nil
+}
+
+func canAccessAdminPath(user *model.User, path string) bool {
+	if user == nil {
+		return false
+	}
+	if user.IsAdmin || model.NormalizeUserRole(user.Role) == model.UserRoleAdmin {
+		return true
+	}
+	role := model.NormalizeUserRole(user.Role)
+	if role == model.UserRoleOperations {
+		return hasAdminPathPrefix(path, "/api/channels", "/api/models", "/api/channel-models", "/api/user-channels", "/api/logs", "/api/audit-logs", "/api/stats", "/api/channel-usage", "/api/status-monitors", "/api/nodes", "/api/scheduled-jobs")
+	}
+	if role == model.UserRoleSales {
+		return hasAdminPathPrefix(path, "/api/users", "/api/groups", "/api/referral-commissions", "/api/stats")
+	}
+	return false
+}
+
+func hasAdminPathPrefix(path string, prefixes ...string) bool {
+	for _, prefix := range prefixes {
+		if path == prefix || strings.HasPrefix(path, prefix+"/") {
+			return true
+		}
+	}
+	return false
 }

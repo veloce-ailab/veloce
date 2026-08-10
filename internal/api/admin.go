@@ -5106,9 +5106,24 @@ func (api *UserAPI) Create(c *gin.Context) {
 		GroupID  uint            `json:"group_id"`
 		Balance  decimal.Decimal `json:"balance"`
 		IsAdmin  bool            `json:"is_admin"`
+		Role     string          `json:"role"`
 	}
 	if err := c.ShouldBindJSON(&input); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+	actor, ok := currentUser(c)
+	if !ok {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "Unauthorized"})
+		return
+	}
+	if strings.TrimSpace(input.Role) != "" && !model.IsValidUserRole(input.Role) {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid role"})
+		return
+	}
+	role := model.NormalizeUserRole(input.Role)
+	if !actor.IsAdmin && (input.IsAdmin || role != model.UserRoleUser) {
+		c.JSON(http.StatusForbidden, gin.H{"error": "Only the super administrator can assign roles"})
 		return
 	}
 
@@ -5169,7 +5184,7 @@ func (api *UserAPI) Create(c *gin.Context) {
 		return
 	}
 
-	user := model.User{Username: input.Username, Email: input.Email, PasswordHash: string(passwordHash), EmailVerified: true, Balance: input.Balance, GroupID: group.ID, APIKey: apiKey, ReferralCode: &referralCode, IsAdmin: input.IsAdmin}
+	user := model.User{Username: input.Username, Email: input.Email, PasswordHash: string(passwordHash), EmailVerified: true, Balance: input.Balance, GroupID: group.ID, APIKey: apiKey, ReferralCode: &referralCode, IsAdmin: input.IsAdmin, Role: role}
 	if err := model.DB.Transaction(func(tx *gorm.DB) error {
 		if err := tx.Create(&user).Error; err != nil {
 			return err
@@ -5210,6 +5225,17 @@ func (api *UserAPI) Bulk(c *gin.Context) {
 	for _, id := range ids {
 		if id == actor.ID {
 			c.JSON(http.StatusBadRequest, gin.H{"error": "You cannot bulk modify your own account"})
+			return
+		}
+	}
+	if !actor.IsAdmin {
+		var staffCount int64
+		if err := model.DB.Model(&model.User{}).Where("id IN ? AND (is_admin = ? OR role <> ?)", ids, true, model.UserRoleUser).Count(&staffCount).Error; err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+			return
+		}
+		if staffCount > 0 {
+			c.JSON(http.StatusForbidden, gin.H{"error": "Only the super administrator can modify staff accounts"})
 			return
 		}
 	}
@@ -5263,9 +5289,27 @@ func (api *UserAPI) Update(c *gin.Context) {
 		GroupID    *uint            `json:"group_id"`
 		IsAdmin    *bool            `json:"is_admin"`
 		IsDisabled *bool            `json:"is_disabled"`
+		Role       *string          `json:"role"`
 	}
 	if err := c.ShouldBindJSON(&input); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+	actor, ok := currentUser(c)
+	if !ok {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "Unauthorized"})
+		return
+	}
+	if (input.Role != nil || input.IsAdmin != nil) && (!actor.IsAdmin || user.ID == actor.ID) {
+		c.JSON(http.StatusForbidden, gin.H{"error": "Only the super administrator can assign roles, and not to the current account"})
+		return
+	}
+	if !actor.IsAdmin && model.IsStaffUser(&user) {
+		c.JSON(http.StatusForbidden, gin.H{"error": "Only the super administrator can modify staff accounts"})
+		return
+	}
+	if input.Role != nil && !model.IsValidUserRole(*input.Role) {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid role"})
 		return
 	}
 
@@ -5287,6 +5331,9 @@ func (api *UserAPI) Update(c *gin.Context) {
 	}
 	if input.IsAdmin != nil {
 		updates["is_admin"] = *input.IsAdmin
+	}
+	if input.Role != nil {
+		updates["role"] = model.NormalizeUserRole(*input.Role)
 	}
 	if input.IsDisabled != nil {
 		updates["is_disabled"] = *input.IsDisabled
@@ -5329,11 +5376,29 @@ func (api *UserAPI) Update(c *gin.Context) {
 
 func (api *UserAPI) Delete(c *gin.Context) {
 	id := c.Param("id")
-	if user, ok := currentUser(c); ok && strconv.FormatUint(uint64(user.ID), 10) == id {
+	actor, ok := currentUser(c)
+	if !ok {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "Unauthorized"})
+		return
+	}
+	if strconv.FormatUint(uint64(actor.ID), 10) == id {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "You cannot delete your own account"})
 		return
 	}
-	if err := model.DB.Delete(&model.User{}, id).Error; err != nil {
+	var target model.User
+	if err := model.DB.First(&target, id).Error; err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			c.JSON(http.StatusNotFound, gin.H{"error": "User not found"})
+			return
+		}
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	if !actor.IsAdmin && model.IsStaffUser(&target) {
+		c.JSON(http.StatusForbidden, gin.H{"error": "Only the super administrator can modify staff accounts"})
+		return
+	}
+	if err := model.DB.Delete(&target).Error; err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
 	}

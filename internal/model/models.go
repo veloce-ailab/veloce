@@ -1,10 +1,50 @@
 package model
 
 import (
+	"strings"
 	"time"
 
 	"github.com/shopspring/decimal"
 )
+
+const (
+	UserRoleUser       = "user"
+	UserRoleAdmin      = "admin"
+	UserRoleSupport    = "support"
+	UserRoleOperations = "operations"
+	UserRoleSales      = "sales"
+)
+
+const UserRoleSuperAdmin = "super_admin"
+
+func NormalizeUserRole(role string) string {
+	switch strings.ToLower(strings.TrimSpace(role)) {
+	case UserRoleAdmin, UserRoleSupport, UserRoleOperations, UserRoleSales:
+		return strings.ToLower(strings.TrimSpace(role))
+	default:
+		return UserRoleUser
+	}
+}
+
+func EffectiveUserRole(user *User) string {
+	if user != nil && user.IsAdmin {
+		return UserRoleSuperAdmin
+	}
+	if user == nil {
+		return UserRoleUser
+	}
+	return NormalizeUserRole(user.Role)
+}
+
+func IsStaffUser(user *User) bool {
+	role := EffectiveUserRole(user)
+	return role == UserRoleSuperAdmin || role == UserRoleAdmin || role == UserRoleSupport || role == UserRoleOperations || role == UserRoleSales
+}
+
+func IsValidUserRole(role string) bool {
+	role = strings.ToLower(strings.TrimSpace(role))
+	return role == UserRoleUser || role == UserRoleAdmin || role == UserRoleSupport || role == UserRoleOperations || role == UserRoleSales
+}
 
 // User represents a system user
 type User struct {
@@ -25,6 +65,7 @@ type User struct {
 	ReferrerID    *uint                 `gorm:"index" json:"referrer_id,omitempty"`
 	Referrer      *User                 `gorm:"foreignKey:ReferrerID;references:ID" json:"referrer,omitempty"`
 	IsAdmin       bool                  `gorm:"default:false" json:"is_admin"`
+	Role          string                `gorm:"size:32;not null;default:user;index" json:"role"`
 	IsDisabled    bool                  `gorm:"default:false" json:"is_disabled"`
 	CreatedAt     time.Time             `json:"created_at"`
 	UpdatedAt     time.Time             `json:"updated_at"`
@@ -565,11 +606,11 @@ type TokenLog struct {
 	Cost                    decimal.Decimal `gorm:"type:decimal(20,10)" json:"cost"`
 	// Status 为 0 表示成功（历史行兼容）；上级调用失败时记录返回给用户的 HTTP 状态码，
 	// 该行不计费但仍写入明细，让用户能看到失败的请求。
-	Status                  int             `gorm:"default:0" json:"status"`
-	ErrorMessage            string          `gorm:"size:500" json:"error_message,omitempty"`
-	IP                      string          `gorm:"size:45" json:"ip"`
-	UserAgent               string          `json:"user_agent"`
-	CreatedAt               time.Time       `json:"created_at"`
+	Status       int       `gorm:"default:0" json:"status"`
+	ErrorMessage string    `gorm:"size:500" json:"error_message,omitempty"`
+	IP           string    `gorm:"size:45" json:"ip"`
+	UserAgent    string    `json:"user_agent"`
+	CreatedAt    time.Time `json:"created_at"`
 }
 
 // AuditLog records API access, login attempts, admin changes, and background system events.

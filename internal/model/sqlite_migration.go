@@ -294,7 +294,7 @@ func copySQLiteMigrationTable(source, target *gorm.DB, item interface{}) (int64,
 func sqliteMigrationModels() []interface{} {
 	models := []interface{}{
 		&User{}, &UserAvatar{}, &APIKey{}, &EmailVerificationCode{}, &PhoneVerificationCode{}, &OIDCBindRequest{}, &WebAuthnChallenge{}, &PasskeyCredential{}, &CheckInRecord{}, &PaymentOrder{}, &WalletTransaction{}, &WalletLimitUsage{},
-		&Group{}, &UserGroupMembership{}, &ChannelGroupMultiplier{}, &ModelGroupMultiplier{}, &ReferralCommissionLog{}, &UserChannel{}, &UserChannelGroupAccess{}, &UserChannelUserAccess{}, &Channel{}, &Model{}, &ModelConfig{},
+		&Group{}, &UserGroupMembership{}, &ChannelGroupMultiplier{}, &ModelGroupMultiplier{}, &ReferralCommissionLog{}, &UserChannel{}, &UserChannelGroupAccess{}, &UserChannelUserAccess{}, &Channel{}, &Model{}, &ModelConfig{}, &TicketCategory{},
 		&StatusMonitor{}, &Announcement{}, &SystemSetting{}, &ClusterNode{}, &VideoTask{}, &Plugin{}, &UserPluginState{}, &UserPluginConfig{}, &PluginKV{},
 	}
 

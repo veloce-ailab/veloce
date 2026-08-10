@@ -89,6 +89,7 @@ func InitDB() {
 		&StatusMonitor{},
 		&Announcement{},
 		&SystemSetting{},
+		&TicketCategory{},
 		&ClusterNode{},
 		&VideoTask{},
 		&Plugin{},
@@ -238,6 +239,9 @@ func initData() {
 	}
 	if err := EnsureDefaultSystemSettings(); err != nil {
 		log.Fatalf("failed to initialize system settings: %v", err)
+	}
+	if err := EnsureDefaultTicketCategories(DB); err != nil {
+		log.Fatalf("failed to initialize ticket categories: %v", err)
 	}
 }
 
