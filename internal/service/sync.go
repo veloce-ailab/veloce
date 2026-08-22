@@ -11,6 +11,7 @@ import (
 	"net/http"
 	"regexp"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 
@@ -30,6 +31,7 @@ const CommunityPricingBaseURL = "https://veloce-community.flweb.cn"
 var (
 	tieredExprThresholdPattern = regexp.MustCompile(`(?i)\b(p|len)\s*(<=|<|>=|>)\s*([0-9]+)`)
 	tieredExprTierPattern      = regexp.MustCompile(`(?is)tier\s*\(\s*"[^"]*"\s*,\s*(.*?)\s*\)`)
+	tieredExprHourRangePattern = regexp.MustCompile(`(?i)hour\s*\(\s*"([^" ]+)"\s*\)\s*>=\s*([0-9]{1,2})\s*(&&|\|\|)\s*hour\s*\(\s*"[^" ]+"\s*\)\s*<\s*([0-9]{1,2})\s*\?\s*([0-9]+(?:\.[0-9]+)?)\s*:\s*1`)
 )
 
 func NewSyncService() *SyncService {
@@ -78,6 +80,7 @@ type upstreamModelPrice struct {
 	EndpointTypes             []string
 	QuotaType                 int
 	UsesBillingExpression     bool
+	TimePricing               model.TimePricing
 	InputPrice                decimal.Decimal
 	OutputPrice               decimal.Decimal
 	CachedInputPrice          decimal.Decimal
@@ -111,6 +114,7 @@ type ModelSyncItem struct {
 	OutputPriceTiers          model.PriceTierList `json:"output_price_tiers"`
 	CachedInputPriceTiers     model.PriceTierList `json:"cached_input_price_tiers"`
 	CacheWriteInputPriceTiers model.PriceTierList `json:"cache_write_input_price_tiers"`
+	TimePricing               model.TimePricing   `json:"time_pricing"`
 	Provider                  string              `json:"provider"`
 	ProviderName              string              `json:"provider_name"`
 	ProviderIconURL           string              `json:"provider_icon_url"`
@@ -231,7 +235,7 @@ func (s *SyncService) SyncChannelPrices(channel *model.Channel) ChannelSyncResul
 			continue
 		}
 		provider := ResolveModelProvider(modelName, "", "")
-		if err := upsertGlobalModelPrice(modelName, item.QuotaType, item.InputPrice, item.OutputPrice, item.CachedInputPrice, item.CacheWriteInputPrice, item.InputPriceTiers, item.OutputPriceTiers, item.CachedInputPriceTiers, item.CacheWriteInputPriceTiers, provider, &result); err != nil {
+		if err := upsertGlobalModelPrice(modelName, item.QuotaType, item.InputPrice, item.OutputPrice, item.CachedInputPrice, item.CacheWriteInputPrice, item.InputPriceTiers, item.OutputPriceTiers, item.CachedInputPriceTiers, item.CacheWriteInputPriceTiers, item.TimePricing, provider, &result); err != nil {
 			result.Error = err.Error()
 			return result
 		}
@@ -418,6 +422,7 @@ func (s *SyncService) buildGlobalPriceSyncPreview(channel *model.Channel, source
 			OutputPriceTiers:          item.OutputPriceTiers,
 			CachedInputPriceTiers:     item.CachedInputPriceTiers,
 			CacheWriteInputPriceTiers: item.CacheWriteInputPriceTiers,
+			TimePricing:               item.TimePricing,
 			Provider:                  provider.ID,
 			ProviderName:              provider.Name,
 			ProviderIconURL:           provider.IconURL,
@@ -484,7 +489,7 @@ func applyGlobalPriceItems(items []ModelSyncItem, result *ChannelSyncResult) err
 			continue
 		}
 		provider := ResolveModelProvider(modelName, item.Provider, item.ProviderIconURL)
-		if err := upsertGlobalModelPrice(modelName, item.QuotaType, item.InputPrice, item.OutputPrice, item.CachedInputPrice, item.CacheWriteInputPrice, item.InputPriceTiers, item.OutputPriceTiers, item.CachedInputPriceTiers, item.CacheWriteInputPriceTiers, provider, result); err != nil {
+		if err := upsertGlobalModelPrice(modelName, item.QuotaType, item.InputPrice, item.OutputPrice, item.CachedInputPrice, item.CacheWriteInputPrice, item.InputPriceTiers, item.OutputPriceTiers, item.CachedInputPriceTiers, item.CacheWriteInputPriceTiers, item.TimePricing, provider, result); err != nil {
 			result.Error = err.Error()
 			return err
 		}
@@ -530,7 +535,7 @@ func upsertChannelModel(channel *model.Channel, modelName string, provider Model
 	return err
 }
 
-func upsertGlobalModelPrice(modelName string, quotaType int, inputPrice decimal.Decimal, outputPrice decimal.Decimal, cachedInputPrice decimal.Decimal, cacheWriteInputPrice decimal.Decimal, inputPriceTiers model.PriceTierList, outputPriceTiers model.PriceTierList, cachedInputPriceTiers model.PriceTierList, cacheWriteInputPriceTiers model.PriceTierList, provider ModelProvider, result *ChannelSyncResult) error {
+func upsertGlobalModelPrice(modelName string, quotaType int, inputPrice decimal.Decimal, outputPrice decimal.Decimal, cachedInputPrice decimal.Decimal, cacheWriteInputPrice decimal.Decimal, inputPriceTiers model.PriceTierList, outputPriceTiers model.PriceTierList, cachedInputPriceTiers model.PriceTierList, cacheWriteInputPriceTiers model.PriceTierList, timePricing model.TimePricing, provider ModelProvider, result *ChannelSyncResult) error {
 	quotaType = normalizeQuotaType(quotaType)
 	var globalModel model.Model
 	queryResult := model.DB.Where(&model.Model{ModelName: modelName}).Limit(1).Find(&globalModel)
@@ -551,6 +556,7 @@ func upsertGlobalModelPrice(modelName string, quotaType int, inputPrice decimal.
 			OutputPriceTiers:          model.NormalizePriceTiers(outputPriceTiers),
 			CachedInputPriceTiers:     model.NormalizePriceTiers(cachedInputPriceTiers),
 			CacheWriteInputPriceTiers: model.NormalizePriceTiers(cacheWriteInputPriceTiers),
+			TimePricing:               model.NormalizeTimePricing(timePricing),
 			Enabled:                   true,
 		}).Error; err != nil {
 			return err
@@ -569,6 +575,7 @@ func upsertGlobalModelPrice(modelName string, quotaType int, inputPrice decimal.
 		"output_price_tiers":            model.NormalizePriceTiers(outputPriceTiers),
 		"cached_input_price_tiers":      model.NormalizePriceTiers(cachedInputPriceTiers),
 		"cache_write_input_price_tiers": model.NormalizePriceTiers(cacheWriteInputPriceTiers),
+		"time_pricing":                  model.NormalizeTimePricing(timePricing),
 	}
 	// 同步来源的非 Custom 提供商由模型名自动推断，必须同时刷新分类和图标，
 	// 否则旧的错误分类或失效图标会一直保留在已有模型上。
@@ -1323,6 +1330,7 @@ func priceItemFromBillingExpression(modelName string, value map[string]interface
 		CachedInputPrice:      basePrices.CachedInput,
 		CacheWriteInputPrice:  basePrices.CacheWriteInput,
 	}
+	item.TimePricing = timePricingFromExpression(expr, basePrices)
 	if tierPrices != nil {
 		item.InputPriceTiers = model.NormalizePriceTiers(model.PriceTierList{{
 			MinTokens: threshold,
@@ -1346,6 +1354,50 @@ func priceItemFromBillingExpression(modelName string, value map[string]interface
 		}})
 	}
 	return item, true
+}
+
+func timePricingFromExpression(expr string, base tieredExprPrices) model.TimePricing {
+	matches := tieredExprHourRangePattern.FindAllStringSubmatch(expr, -1)
+	if len(matches) == 0 {
+		return model.TimePricing{}
+	}
+	pricing := model.TimePricing{Timezone: matches[0][1]}
+	type hourCondition struct {
+		start, end int
+		operator   string
+		factor     decimal.Decimal
+	}
+	conditions := make([]hourCondition, 0, len(matches))
+	for _, match := range matches {
+		start, startErr := strconv.Atoi(match[2])
+		end, endErr := strconv.Atoi(match[4])
+		factor, factorErr := decimal.NewFromString(match[5])
+		if startErr != nil || endErr != nil || factorErr != nil || start < 0 || start > 23 || end < 0 || end > 23 || match[1] != pricing.Timezone {
+			continue
+		}
+		conditions = append(conditions, hourCondition{start: start, end: end, operator: match[3], factor: factor})
+	}
+	for hour := 0; hour < 24; hour++ {
+		factor := decimal.NewFromInt(1)
+		for _, condition := range conditions {
+			active := hour >= condition.start && hour < condition.end
+			if condition.operator == "||" {
+				active = hour >= condition.start || hour < condition.end
+			}
+			if active {
+				factor = factor.Mul(condition.factor)
+			}
+		}
+		if factor.Equal(decimal.NewFromInt(1)) {
+			continue
+		}
+		start, end := fmt.Sprintf("%02d:00", hour), fmt.Sprintf("%02d:00", (hour+1)%24)
+		pricing.Input = append(pricing.Input, model.TimePriceTier{Start: start, End: end, Price: base.Input.Mul(factor)})
+		pricing.Output = append(pricing.Output, model.TimePriceTier{Start: start, End: end, Price: base.Output.Mul(factor)})
+		pricing.CachedInput = append(pricing.CachedInput, model.TimePriceTier{Start: start, End: end, Price: base.CachedInput.Mul(factor)})
+		pricing.CacheWriteInput = append(pricing.CacheWriteInput, model.TimePriceTier{Start: start, End: end, Price: base.CacheWriteInput.Mul(factor)})
+	}
+	return model.NormalizeTimePricing(pricing)
 }
 
 func tieredExprThreshold(expr string) (string, string, int, bool) {
@@ -1492,6 +1544,10 @@ func normalizeQuotaType(value int) int {
 }
 
 func multiplyTokenPricedModelPrices(items []upstreamModelPrice) []upstreamModelPrice {
+	// IMPORTANT: keep this x2 conversion. Public pricing divides token prices
+	// and token tiers by 2 in exposedPricingDecimal/exposedPricingTiers, so the
+	// stored price must stay doubled. Per-call and billing_expr prices already
+	// have their final semantics and must never be converted here.
 	multiplier := decimal.NewFromInt(2)
 	result := make([]upstreamModelPrice, len(items))
 	for index, item := range items {

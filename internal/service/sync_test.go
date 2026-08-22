@@ -26,6 +26,24 @@ func TestTimeTierPriceUsesTimezoneAndCrossMidnight(t *testing.T) {
 	}
 }
 
+func TestParseBillingExpressionWithHourMultipliers(t *testing.T) {
+	item, ok := priceItemFromBillingExpression("deepseek-v4-flash-vision-exp", map[string]interface{}{
+		"billing_expr": `(tier("base", p * 0.375 + c * 0.675 + cr * 0.0075)) * (hour("Asia/Shanghai") >= 9 && hour("Asia/Shanghai") < 12 ? 2 : 1) * (hour("Asia/Shanghai") >= 14 && hour("Asia/Shanghai") < 18 ? 2 : 1)`,
+	})
+	if !ok {
+		t.Fatal("billing expression was not parsed")
+	}
+	if item.TimePricing.Timezone != "Asia/Shanghai" {
+		t.Fatalf("timezone = %q", item.TimePricing.Timezone)
+	}
+	if len(item.TimePricing.Input) != 7 {
+		t.Fatalf("time tier count = %d, want 7", len(item.TimePricing.Input))
+	}
+	if !item.TimePricing.Input[0].Price.Equal(decimal.RequireFromString("0.75")) {
+		t.Fatalf("first time tier price = %s", item.TimePricing.Input[0].Price)
+	}
+}
+
 func TestParseUpstreamPriceItemsSplitRatios(t *testing.T) {
 	body := []byte(`{
 		"success": true,

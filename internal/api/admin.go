@@ -3318,6 +3318,9 @@ func setMinDecimalWithTiers(values map[string]decimal.Decimal, tiers map[string]
 }
 
 func exposedPricingDecimal(value decimal.Decimal, quotaType int) decimal.Decimal {
+	// IMPORTANT: this is paired with multiplyTokenPricedModelPrices during sync.
+	// Do not remove the /2 conversion for token pricing without changing both
+	// locations, or public prices will become twice/half their intended value.
 	normalizedQuotaType := normalizeQuotaType(quotaType)
 	if normalizedQuotaType == 1 || normalizedQuotaType == model.QuotaTypeVideoResolutionDuration {
 		return value
@@ -3326,6 +3329,7 @@ func exposedPricingDecimal(value decimal.Decimal, quotaType int) decimal.Decimal
 }
 
 func exposedPricingTiers(tiers model.PriceTierList, quotaType int) model.PriceTierList {
+	// Keep tier output aligned with exposedPricingDecimal above.
 	normalizedQuotaType := normalizeQuotaType(quotaType)
 	if normalizedQuotaType == 1 || normalizedQuotaType == model.QuotaTypeVideoResolutionDuration {
 		return model.NormalizePriceTiers(tiers)
