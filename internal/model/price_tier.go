@@ -6,9 +6,104 @@ import (
 	"fmt"
 	"sort"
 	"strings"
+	"time"
 
 	"github.com/shopspring/decimal"
 )
+
+// TimePriceTier applies a price during a local wall-clock interval. End equal
+// to start means the interval covers the whole day; an end before start
+// crosses midnight.
+type TimePriceTier struct {
+	Start string          `json:"start"`
+	End   string          `json:"end"`
+	Price decimal.Decimal `json:"price"`
+	Label string          `json:"label,omitempty"`
+}
+
+type TimePriceTierList []TimePriceTier
+
+type TimePricing struct {
+	Timezone          string            `json:"timezone"`
+	Input             TimePriceTierList `json:"input"`
+	Output            TimePriceTierList `json:"output"`
+	CachedInput       TimePriceTierList `json:"cached_input"`
+	CacheWriteInput   TimePriceTierList `json:"cache_write_input"`
+	CacheWrite1hInput TimePriceTierList `json:"cache_write_1h_input"`
+	ImageInput        TimePriceTierList `json:"image_input"`
+	ImageOutput       TimePriceTierList `json:"image_output"`
+	AudioInput        TimePriceTierList `json:"audio_input"`
+	AudioOutput       TimePriceTierList `json:"audio_output"`
+}
+
+func NormalizeTimePriceTiers(tiers TimePriceTierList) TimePriceTierList {
+	result := make(TimePriceTierList, 0, len(tiers))
+	for _, tier := range tiers {
+		start, err := time.Parse("15:04", strings.TrimSpace(tier.Start))
+		if err != nil {
+			continue
+		}
+		end, err := time.Parse("15:04", strings.TrimSpace(tier.End))
+		if err != nil {
+			continue
+		}
+		if tier.Price.LessThan(decimal.Zero) {
+			continue
+		}
+		tier.Start, tier.End = start.Format("15:04"), end.Format("15:04")
+		result = append(result, tier)
+	}
+	return result
+}
+
+func NormalizeTimePricing(pricing TimePricing) TimePricing {
+	pricing.Timezone = strings.TrimSpace(pricing.Timezone)
+	if pricing.Timezone == "" {
+		pricing.Timezone = "UTC"
+	}
+	if _, err := time.LoadLocation(pricing.Timezone); err != nil {
+		pricing.Timezone = "UTC"
+	}
+	pricing.Input = NormalizeTimePriceTiers(pricing.Input)
+	pricing.Output = NormalizeTimePriceTiers(pricing.Output)
+	pricing.CachedInput = NormalizeTimePriceTiers(pricing.CachedInput)
+	pricing.CacheWriteInput = NormalizeTimePriceTiers(pricing.CacheWriteInput)
+	pricing.CacheWrite1hInput = NormalizeTimePriceTiers(pricing.CacheWrite1hInput)
+	pricing.ImageInput = NormalizeTimePriceTiers(pricing.ImageInput)
+	pricing.ImageOutput = NormalizeTimePriceTiers(pricing.ImageOutput)
+	pricing.AudioInput = NormalizeTimePriceTiers(pricing.AudioInput)
+	pricing.AudioOutput = NormalizeTimePriceTiers(pricing.AudioOutput)
+	return pricing
+}
+
+func (pricing TimePricing) Value() (driver.Value, error) {
+	return json.Marshal(NormalizeTimePricing(pricing))
+}
+func (pricing *TimePricing) Scan(value interface{}) error {
+	if value == nil {
+		*pricing = TimePricing{}
+		return nil
+	}
+	var raw []byte
+	switch v := value.(type) {
+	case []byte:
+		raw = v
+	case string:
+		raw = []byte(v)
+	default:
+		return fmt.Errorf("unsupported time pricing value %T", value)
+	}
+	if len(strings.TrimSpace(string(raw))) == 0 {
+		*pricing = TimePricing{}
+		return nil
+	}
+	var parsed TimePricing
+	if err := json.Unmarshal(raw, &parsed); err != nil {
+		return err
+	}
+	*pricing = NormalizeTimePricing(parsed)
+	return nil
+}
 
 const (
 	PriceTierConditionCurrentTokens        = "current_tokens"

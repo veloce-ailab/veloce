@@ -1734,6 +1734,7 @@ func usagePricingFormula(usage usageTokenCounts, baseCost, groupMultiplier, chan
 }
 
 func calculateModelUsageCost(usage usageTokenCounts, modelConfig model.Model) decimal.Decimal {
+	now := time.Now()
 	if modelConfig.QuotaType == model.QuotaTypeVideoResolutionDuration {
 		if usage.BillableCost.LessThan(decimal.Zero) {
 			return decimal.Zero
@@ -1741,6 +1742,10 @@ func calculateModelUsageCost(usage usageTokenCounts, modelConfig model.Model) de
 		return usage.BillableCost
 	}
 	if modelConfig.QuotaType == 1 {
+		price := modelConfig.OutputPrice
+		if scheduledPrice, ok := timeTierPrice(modelConfig.TimePricing.Output, modelConfig.TimePricing.Timezone, now); ok {
+			price = scheduledPrice
+		}
 		count := usage.OutputTokens / 1000000
 		if usage.OutputTokens%1000000 != 0 {
 			count++
@@ -1748,7 +1753,7 @@ func calculateModelUsageCost(usage usageTokenCounts, modelConfig model.Model) de
 		if count <= 0 {
 			count = 1
 		}
-		return modelConfig.OutputPrice.Mul(decimal.NewFromInt(int64(count)))
+		return price.Mul(decimal.NewFromInt(int64(count)))
 	}
 
 	metrics := PriceTierMetrics{
@@ -1763,37 +1768,37 @@ func calculateModelUsageCost(usage usageTokenCounts, modelConfig model.Model) de
 	total := decimal.Zero
 
 	imageInputTokens := 0
-	if hasDedicatedPrice(modelConfig.ImageInputPrice, modelConfig.ImageInputPriceTiers) {
+	if hasDedicatedPrice(modelConfig.ImageInputPrice, modelConfig.ImageInputPriceTiers, modelConfig.TimePricing.ImageInput) {
 		imageInputTokens = clampTokenCount(usage.ImageInputTokens, inputTokens)
 		inputTokens -= imageInputTokens
-		total = total.Add(CalculateTieredTokenCostWithMetrics(imageInputTokens, modelConfig.ImageInputPrice, modelConfig.ImageInputPriceTiers, metrics))
+		total = total.Add(calculateTimeAwareTieredCost(imageInputTokens, modelConfig.ImageInputPrice, modelConfig.ImageInputPriceTiers, modelConfig.TimePricing.ImageInput, modelConfig.TimePricing.Timezone, now, metrics))
 	}
 	audioInputTokens := 0
-	if hasDedicatedPrice(modelConfig.AudioInputPrice, modelConfig.AudioInputPriceTiers) {
+	if hasDedicatedPrice(modelConfig.AudioInputPrice, modelConfig.AudioInputPriceTiers, modelConfig.TimePricing.AudioInput) {
 		audioInputTokens = clampTokenCount(usage.AudioInputTokens, inputTokens)
 		inputTokens -= audioInputTokens
-		total = total.Add(CalculateTieredTokenCostWithMetrics(audioInputTokens, modelConfig.AudioInputPrice, modelConfig.AudioInputPriceTiers, metrics))
+		total = total.Add(calculateTimeAwareTieredCost(audioInputTokens, modelConfig.AudioInputPrice, modelConfig.AudioInputPriceTiers, modelConfig.TimePricing.AudioInput, modelConfig.TimePricing.Timezone, now, metrics))
 	}
 
 	imageOutputTokens := 0
-	if hasDedicatedPrice(modelConfig.ImageOutputPrice, modelConfig.ImageOutputPriceTiers) {
+	if hasDedicatedPrice(modelConfig.ImageOutputPrice, modelConfig.ImageOutputPriceTiers, modelConfig.TimePricing.ImageOutput) {
 		imageOutputTokens = clampTokenCount(usage.ImageOutputTokens, outputTokens)
 		outputTokens -= imageOutputTokens
-		total = total.Add(CalculateTieredTokenCostWithMetrics(imageOutputTokens, modelConfig.ImageOutputPrice, modelConfig.ImageOutputPriceTiers, metrics))
+		total = total.Add(calculateTimeAwareTieredCost(imageOutputTokens, modelConfig.ImageOutputPrice, modelConfig.ImageOutputPriceTiers, modelConfig.TimePricing.ImageOutput, modelConfig.TimePricing.Timezone, now, metrics))
 	}
 	audioOutputTokens := 0
-	if hasDedicatedPrice(modelConfig.AudioOutputPrice, modelConfig.AudioOutputPriceTiers) {
+	if hasDedicatedPrice(modelConfig.AudioOutputPrice, modelConfig.AudioOutputPriceTiers, modelConfig.TimePricing.AudioOutput) {
 		audioOutputTokens = clampTokenCount(usage.AudioOutputTokens, outputTokens)
 		outputTokens -= audioOutputTokens
-		total = total.Add(CalculateTieredTokenCostWithMetrics(audioOutputTokens, modelConfig.AudioOutputPrice, modelConfig.AudioOutputPriceTiers, metrics))
+		total = total.Add(calculateTimeAwareTieredCost(audioOutputTokens, modelConfig.AudioOutputPrice, modelConfig.AudioOutputPriceTiers, modelConfig.TimePricing.AudioOutput, modelConfig.TimePricing.Timezone, now, metrics))
 	}
 
 	return total.
-		Add(CalculateTieredTokenCostWithMetrics(inputTokens, modelConfig.InputPrice, modelConfig.InputPriceTiers, metrics)).
-		Add(CalculateTieredTokenCostWithMetrics(usage.CacheReadInputTokens, modelConfig.CachedInputPrice, modelConfig.CachedInputPriceTiers, metrics)).
-		Add(CalculateTieredTokenCostWithMetrics(usage.CacheWriteInputTokens, modelConfig.CacheWriteInputPrice, modelConfig.CacheWriteInputPriceTiers, metrics)).
-		Add(CalculateTieredTokenCostWithMetrics(usage.CacheWrite1hInputTokens, modelConfig.CacheWrite1hInputPrice, modelConfig.CacheWrite1hInputPriceTiers, metrics)).
-		Add(CalculateTieredTokenCostWithMetrics(outputTokens, modelConfig.OutputPrice, modelConfig.OutputPriceTiers, metrics))
+		Add(calculateTimeAwareTieredCost(inputTokens, modelConfig.InputPrice, modelConfig.InputPriceTiers, modelConfig.TimePricing.Input, modelConfig.TimePricing.Timezone, now, metrics)).
+		Add(calculateTimeAwareTieredCost(usage.CacheReadInputTokens, modelConfig.CachedInputPrice, modelConfig.CachedInputPriceTiers, modelConfig.TimePricing.CachedInput, modelConfig.TimePricing.Timezone, now, metrics)).
+		Add(calculateTimeAwareTieredCost(usage.CacheWriteInputTokens, modelConfig.CacheWriteInputPrice, modelConfig.CacheWriteInputPriceTiers, modelConfig.TimePricing.CacheWriteInput, modelConfig.TimePricing.Timezone, now, metrics)).
+		Add(calculateTimeAwareTieredCost(usage.CacheWrite1hInputTokens, modelConfig.CacheWrite1hInputPrice, modelConfig.CacheWrite1hInputPriceTiers, modelConfig.TimePricing.CacheWrite1hInput, modelConfig.TimePricing.Timezone, now, metrics)).
+		Add(calculateTimeAwareTieredCost(outputTokens, modelConfig.OutputPrice, modelConfig.OutputPriceTiers, modelConfig.TimePricing.Output, modelConfig.TimePricing.Timezone, now, metrics))
 }
 
 func billableInputTokens(usage usageTokenCounts) int {
@@ -1804,8 +1809,8 @@ func billableInputTokens(usage usageTokenCounts) int {
 	return tokens
 }
 
-func hasDedicatedPrice(price decimal.Decimal, tiers model.PriceTierList) bool {
-	return !price.IsZero() || len(model.NormalizePriceTiers(tiers)) > 0
+func hasDedicatedPrice(price decimal.Decimal, tiers model.PriceTierList, timeTiers model.TimePriceTierList) bool {
+	return !price.IsZero() || len(model.NormalizePriceTiers(tiers)) > 0 || len(model.NormalizeTimePriceTiers(timeTiers)) > 0
 }
 
 func clampTokenCount(tokens int, maxTokens int) int {

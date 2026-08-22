@@ -146,6 +146,7 @@ type configurationModelPrice struct {
 	ImageOutputPriceTiers       model.PriceTierList      `json:"image_output_price_tiers"`
 	AudioInputPriceTiers        model.PriceTierList      `json:"audio_input_price_tiers"`
 	AudioOutputPriceTiers       model.PriceTierList      `json:"audio_output_price_tiers"`
+	TimePricing                 model.TimePricing        `json:"time_pricing"`
 	VideoBillingConfig          model.VideoBillingConfig `json:"video_billing_config"`
 }
 
@@ -710,7 +711,7 @@ func buildConfigurationExport(sections map[string]bool) (configurationExport, er
 		if sections[configurationSectionPrices] {
 			export.ModelPrices = make([]configurationModelPrice, 0, len(models))
 			for _, item := range models {
-				export.ModelPrices = append(export.ModelPrices, configurationModelPrice{ModelName: item.ModelName, QuotaType: item.QuotaType, InputPrice: item.InputPrice, OutputPrice: item.OutputPrice, CachedInputPrice: item.CachedInputPrice, CacheWriteInputPrice: item.CacheWriteInputPrice, CacheWrite1hInputPrice: item.CacheWrite1hInputPrice, ImageInputPrice: item.ImageInputPrice, ImageOutputPrice: item.ImageOutputPrice, AudioInputPrice: item.AudioInputPrice, AudioOutputPrice: item.AudioOutputPrice, InputPriceTiers: item.InputPriceTiers, OutputPriceTiers: item.OutputPriceTiers, CachedInputPriceTiers: item.CachedInputPriceTiers, CacheWriteInputPriceTiers: item.CacheWriteInputPriceTiers, CacheWrite1hInputPriceTiers: item.CacheWrite1hInputPriceTiers, ImageInputPriceTiers: item.ImageInputPriceTiers, ImageOutputPriceTiers: item.ImageOutputPriceTiers, AudioInputPriceTiers: item.AudioInputPriceTiers, AudioOutputPriceTiers: item.AudioOutputPriceTiers, VideoBillingConfig: item.VideoBillingConfig})
+				export.ModelPrices = append(export.ModelPrices, configurationModelPrice{ModelName: item.ModelName, QuotaType: item.QuotaType, InputPrice: item.InputPrice, OutputPrice: item.OutputPrice, CachedInputPrice: item.CachedInputPrice, CacheWriteInputPrice: item.CacheWriteInputPrice, CacheWrite1hInputPrice: item.CacheWrite1hInputPrice, ImageInputPrice: item.ImageInputPrice, ImageOutputPrice: item.ImageOutputPrice, AudioInputPrice: item.AudioInputPrice, AudioOutputPrice: item.AudioOutputPrice, InputPriceTiers: item.InputPriceTiers, OutputPriceTiers: item.OutputPriceTiers, CachedInputPriceTiers: item.CachedInputPriceTiers, CacheWriteInputPriceTiers: item.CacheWriteInputPriceTiers, CacheWrite1hInputPriceTiers: item.CacheWrite1hInputPriceTiers, ImageInputPriceTiers: item.ImageInputPriceTiers, ImageOutputPriceTiers: item.ImageOutputPriceTiers, AudioInputPriceTiers: item.AudioInputPriceTiers, AudioOutputPriceTiers: item.AudioOutputPriceTiers, TimePricing: item.TimePricing, VideoBillingConfig: item.VideoBillingConfig})
 			}
 			var configs []model.ModelConfig
 			if err := model.DB.Preload("Channel").Preload("Model").Order("channel_id ASC, model_id ASC, upstream_model_name ASC").Find(&configs).Error; err != nil {
@@ -876,6 +877,7 @@ func importConfigurationPrices(tx *gorm.DB, prices []configurationModelPrice, co
 		existing.ImageOutputPriceTiers = item.ImageOutputPriceTiers
 		existing.AudioInputPriceTiers = item.AudioInputPriceTiers
 		existing.AudioOutputPriceTiers = item.AudioOutputPriceTiers
+		existing.TimePricing = model.NormalizeTimePricing(item.TimePricing)
 		existing.VideoBillingConfig = item.VideoBillingConfig
 		if err := tx.Save(&existing).Error; err != nil {
 			return err
@@ -2455,6 +2457,7 @@ type modelConfigInput struct {
 	ImageOutputPriceTiers       model.PriceTierList      `json:"image_output_price_tiers"`
 	AudioInputPriceTiers        model.PriceTierList      `json:"audio_input_price_tiers"`
 	AudioOutputPriceTiers       model.PriceTierList      `json:"audio_output_price_tiers"`
+	TimePricing                 model.TimePricing        `json:"time_pricing"`
 	VideoBillingConfig          model.VideoBillingConfig `json:"video_billing_config"`
 	Enabled                     *bool                    `json:"enabled"`
 }
@@ -3958,6 +3961,7 @@ func modelFromInput(input modelConfigInput, existing *model.Model) (model.Model,
 	globalModel.ImageOutputPriceTiers = model.NormalizePriceTiers(input.ImageOutputPriceTiers)
 	globalModel.AudioInputPriceTiers = model.NormalizePriceTiers(input.AudioInputPriceTiers)
 	globalModel.AudioOutputPriceTiers = model.NormalizePriceTiers(input.AudioOutputPriceTiers)
+	globalModel.TimePricing = model.NormalizeTimePricing(input.TimePricing)
 	globalModel.VideoBillingConfig = model.NormalizeVideoBillingConfig(input.VideoBillingConfig)
 	if globalModel.QuotaType == model.QuotaTypeVideoResolutionDuration {
 		if err := validateVideoBillingConfig(globalModel.VideoBillingConfig); err != nil {

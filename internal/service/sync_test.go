@@ -5,12 +5,26 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"testing"
+	"time"
 
 	"github.com/glebarez/sqlite"
 	"github.com/shopspring/decimal"
 	"github.com/veloce-ailab/veloce/internal/model"
 	"gorm.io/gorm"
 )
+
+func TestTimeTierPriceUsesTimezoneAndCrossMidnight(t *testing.T) {
+	tiers := model.TimePriceTierList{{Start: "22:00", End: "06:00", Price: decimal.NewFromInt(9)}}
+	now := time.Date(2026, 8, 22, 23, 30, 0, 0, time.UTC)
+	price, ok := timeTierPrice(tiers, "UTC", now)
+	if !ok || !price.Equal(decimal.NewFromInt(9)) {
+		t.Fatalf("timeTierPrice() = %s, %v", price, ok)
+	}
+	localNow := time.Date(2026, 8, 22, 7, 0, 0, 0, time.UTC)
+	if _, ok := timeTierPrice(tiers, "Asia/Shanghai", localNow); ok {
+		t.Fatal("expected outside interval after timezone conversion")
+	}
+}
 
 func TestParseUpstreamPriceItemsSplitRatios(t *testing.T) {
 	body := []byte(`{

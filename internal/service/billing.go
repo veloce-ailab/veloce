@@ -1,10 +1,41 @@
 package service
 
 import (
+	"time"
+
 	"github.com/pkoukk/tiktoken-go"
 	"github.com/shopspring/decimal"
 	"github.com/veloce-ailab/veloce/internal/model"
 )
+
+func timeTierPrice(tiers model.TimePriceTierList, timezone string, now time.Time) (decimal.Decimal, bool) {
+	if len(tiers) == 0 {
+		return decimal.Zero, false
+	}
+	location, err := time.LoadLocation(timezone)
+	if err != nil {
+		location = time.UTC
+	}
+	local := now.In(location)
+	minute := local.Hour()*60 + local.Minute()
+	for _, tier := range model.NormalizeTimePriceTiers(tiers) {
+		start, _ := time.Parse("15:04", tier.Start)
+		end, _ := time.Parse("15:04", tier.End)
+		s, e := start.Hour()*60+start.Minute(), end.Hour()*60+end.Minute()
+		match := (s == e) || (s < e && minute >= s && minute < e) || (s > e && (minute >= s || minute < e))
+		if match {
+			return tier.Price, true
+		}
+	}
+	return decimal.Zero, false
+}
+
+func calculateTimeAwareTieredCost(tokens int, base decimal.Decimal, tokenTiers model.PriceTierList, timeTiers model.TimePriceTierList, timezone string, now time.Time, metrics PriceTierMetrics) decimal.Decimal {
+	if price, ok := timeTierPrice(timeTiers, timezone, now); ok {
+		base = price
+	}
+	return CalculateTieredTokenCostWithMetrics(tokens, base, tokenTiers, metrics)
+}
 
 // CountTokens estimates the number of tokens in a string for a given model
 func CountTokens(model string, text string) int {

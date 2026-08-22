@@ -389,6 +389,7 @@ type Model struct {
 	ImageOutputPriceTiers       PriceTierList      `gorm:"type:text" json:"image_output_price_tiers"`
 	AudioInputPriceTiers        PriceTierList      `gorm:"type:text" json:"audio_input_price_tiers"`
 	AudioOutputPriceTiers       PriceTierList      `gorm:"type:text" json:"audio_output_price_tiers"`
+	TimePricing                 TimePricing        `gorm:"type:text" json:"time_pricing"`
 	VideoBillingConfig          VideoBillingConfig `gorm:"type:text" json:"video_billing_config"`
 	Enabled                     bool               `gorm:"default:true" json:"enabled"`
 	CreatedAt                   time.Time          `json:"created_at"`
