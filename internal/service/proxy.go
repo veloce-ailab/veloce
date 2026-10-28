@@ -1743,7 +1743,14 @@ func calculateModelUsageCost(usage usageTokenCounts, modelConfig model.Model) de
 	}
 	if modelConfig.QuotaType == 1 {
 		price := modelConfig.OutputPrice
-		if scheduledPrice, ok := timeTierPrice(modelConfig.TimePricing.Output, modelConfig.TimePricing.Timezone, now); ok {
+		metrics := PriceTierMetrics{
+			CurrentTokens:        usage.OutputTokens,
+			FullInputTokens:      usage.InputTokens,
+			FullRequestTokens:    usage.InputTokens + usage.OutputTokens,
+			BillableInputTokens:  billableInputTokens(usage),
+			BillableOutputTokens: usage.OutputTokens,
+		}
+		if scheduledPrice, ok := timeTierPriceWithMetrics(modelConfig.TimePricing.Output, modelConfig.TimePricing.Timezone, now, metrics); ok {
 			price = scheduledPrice
 		}
 		count := usage.OutputTokens / 1000000

@@ -15,10 +15,11 @@ import (
 // to start means the interval covers the whole day; an end before start
 // crosses midnight.
 type TimePriceTier struct {
-	Start string          `json:"start"`
-	End   string          `json:"end"`
-	Price decimal.Decimal `json:"price"`
-	Label string          `json:"label,omitempty"`
+	Start      string            `json:"start"`
+	End        string            `json:"end"`
+	Price      decimal.Decimal   `json:"price"`
+	Label      string            `json:"label,omitempty"`
+	Conditions *PricingCondition `json:"conditions,omitempty"`
 }
 
 type TimePriceTierList []TimePriceTier
@@ -39,18 +40,26 @@ type TimePricing struct {
 func NormalizeTimePriceTiers(tiers TimePriceTierList) TimePriceTierList {
 	result := make(TimePriceTierList, 0, len(tiers))
 	for _, tier := range tiers {
-		start, err := time.Parse("15:04", strings.TrimSpace(tier.Start))
-		if err != nil {
-			continue
-		}
-		end, err := time.Parse("15:04", strings.TrimSpace(tier.End))
-		if err != nil {
-			continue
-		}
 		if tier.Price.LessThan(decimal.Zero) {
 			continue
 		}
-		tier.Start, tier.End = start.Format("15:04"), end.Format("15:04")
+		if tier.Conditions != nil {
+			conditions, ok := NormalizePricingCondition(*tier.Conditions)
+			if !ok {
+				continue
+			}
+			tier.Conditions = &conditions
+		} else {
+			start, err := time.Parse("15:04", strings.TrimSpace(tier.Start))
+			if err != nil {
+				continue
+			}
+			end, err := time.Parse("15:04", strings.TrimSpace(tier.End))
+			if err != nil {
+				continue
+			}
+			tier.Start, tier.End = start.Format("15:04"), end.Format("15:04")
+		}
 		result = append(result, tier)
 	}
 	return result

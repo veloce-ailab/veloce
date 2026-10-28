@@ -9,6 +9,10 @@ import (
 )
 
 func timeTierPrice(tiers model.TimePriceTierList, timezone string, now time.Time) (decimal.Decimal, bool) {
+	return timeTierPriceWithMetrics(tiers, timezone, now, PriceTierMetrics{})
+}
+
+func timeTierPriceWithMetrics(tiers model.TimePriceTierList, timezone string, now time.Time, metrics PriceTierMetrics) (decimal.Decimal, bool) {
 	if len(tiers) == 0 {
 		return decimal.Zero, false
 	}
@@ -17,21 +21,125 @@ func timeTierPrice(tiers model.TimePriceTierList, timezone string, now time.Time
 		location = time.UTC
 	}
 	local := now.In(location)
-	minute := local.Hour()*60 + local.Minute()
 	for _, tier := range model.NormalizeTimePriceTiers(tiers) {
-		start, _ := time.Parse("15:04", tier.Start)
-		end, _ := time.Parse("15:04", tier.End)
-		s, e := start.Hour()*60+start.Minute(), end.Hour()*60+end.Minute()
-		match := (s == e) || (s < e && minute >= s && minute < e) || (s > e && (minute >= s || minute < e))
-		if match {
+		if tier.Conditions != nil && pricingConditionMatches(*tier.Conditions, local, metrics) {
+			return tier.Price, true
+		}
+		if tier.Conditions == nil && timeRangeMatches(tier.Start, tier.End, local) {
 			return tier.Price, true
 		}
 	}
 	return decimal.Zero, false
 }
 
+func pricingConditionMatches(condition model.PricingCondition, local time.Time, metrics PriceTierMetrics) bool {
+	if condition.Type == model.PricingConditionGroup {
+		if len(condition.Conditions) == 0 {
+			return false
+		}
+		if condition.Logic == "or" {
+			for _, child := range condition.Conditions {
+				if pricingConditionMatches(child, local, metrics) {
+					return true
+				}
+			}
+			return false
+		}
+		for _, child := range condition.Conditions {
+			if !pricingConditionMatches(child, local, metrics) {
+				return false
+			}
+		}
+		return true
+	}
+
+	if condition.Type != model.PricingConditionLeaf {
+		return false
+	}
+	if condition.Field == model.PricingConditionTimeRange {
+		return timeConditionMatches(condition, local)
+	}
+
+	value, ok := pricingConditionMetric(condition.Field, metrics)
+	if !ok {
+		return false
+	}
+	switch condition.Operator {
+	case ">":
+		return value > condition.Value
+	case ">=":
+		return value >= condition.Value
+	case "<":
+		return value < condition.Value
+	case "<=":
+		return value <= condition.Value
+	case "==":
+		return value == condition.Value
+	case "!=":
+		return value != condition.Value
+	default:
+		return false
+	}
+}
+
+func timeConditionMatches(condition model.PricingCondition, local time.Time) bool {
+	if !timeRangeMatches(condition.Start, condition.End, local) {
+		return false
+	}
+	if len(condition.Weekdays) == 0 {
+		return true
+	}
+	start, _ := time.Parse("15:04", condition.Start)
+	end, _ := time.Parse("15:04", condition.End)
+	startMinute := start.Hour()*60 + start.Minute()
+	endMinute := end.Hour()*60 + end.Minute()
+	minute := local.Hour()*60 + local.Minute()
+	weekday := int(local.Weekday())
+	if startMinute > endMinute && minute < endMinute {
+		weekday = (weekday + 6) % 7
+	}
+	for _, selectedWeekday := range condition.Weekdays {
+		if selectedWeekday == weekday {
+			return true
+		}
+	}
+	return false
+}
+
+func pricingConditionMetric(field string, metrics PriceTierMetrics) (int, bool) {
+	switch field {
+	case model.PriceTierConditionCurrentTokens:
+		return metrics.CurrentTokens, true
+	case model.PriceTierConditionFullInputTokens:
+		return metrics.FullInputTokens, true
+	case model.PriceTierConditionFullRequestTokens:
+		return metrics.FullRequestTokens, true
+	case model.PriceTierConditionBillableInputTokens:
+		return metrics.BillableInputTokens, true
+	case model.PriceTierConditionBillableOutputTokens:
+		return metrics.BillableOutputTokens, true
+	default:
+		return 0, false
+	}
+}
+
+func timeRangeMatches(startValue, endValue string, local time.Time) bool {
+	start, startErr := time.Parse("15:04", startValue)
+	end, endErr := time.Parse("15:04", endValue)
+	if startErr != nil || endErr != nil {
+		return false
+	}
+	minute := local.Hour()*60 + local.Minute()
+	startMinute := start.Hour()*60 + start.Minute()
+	endMinute := end.Hour()*60 + end.Minute()
+	return startMinute == endMinute ||
+		(startMinute < endMinute && minute >= startMinute && minute < endMinute) ||
+		(startMinute > endMinute && (minute >= startMinute || minute < endMinute))
+}
+
 func calculateTimeAwareTieredCost(tokens int, base decimal.Decimal, tokenTiers model.PriceTierList, timeTiers model.TimePriceTierList, timezone string, now time.Time, metrics PriceTierMetrics) decimal.Decimal {
-	if price, ok := timeTierPrice(timeTiers, timezone, now); ok {
+	metrics.CurrentTokens = tokens
+	if price, ok := timeTierPriceWithMetrics(timeTiers, timezone, now, metrics); ok {
 		base = price
 	}
 	return CalculateTieredTokenCostWithMetrics(tokens, base, tokenTiers, metrics)
