@@ -2,7 +2,9 @@ package cache
 
 import (
 	"context"
+	"net"
 	"testing"
+	"time"
 
 	"github.com/shopspring/decimal"
 )
@@ -82,6 +84,29 @@ func TestBillingOperationsFallBackWhenRedisIsDisabled(t *testing.T) {
 	StoreUserBillingBalance(context.Background(), 42, decimal.RequireFromString("1.25"))
 	InvalidateUserBillingBalance(context.Background(), 42)
 	release()
+}
+
+func TestConnectContinuesWithoutUnavailableRedis(t *testing.T) {
+	if err := Close(); err != nil {
+		t.Fatalf("close Redis before test: %v", err)
+	}
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("reserve a local port: %v", err)
+	}
+	address := listener.Addr().String()
+	if err := listener.Close(); err != nil {
+		t.Fatalf("release local port: %v", err)
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	if err := connectWithConfig(ctx, RedisConfig{Enabled: true, Address: address}); err != nil {
+		t.Fatalf("connect with unavailable Redis should not fail startup: %v", err)
+	}
+	if client := Client(); client != nil {
+		t.Fatal("Redis client should remain nil when Redis is unavailable")
+	}
 }
 
 func settingValue(values map[string]string) func(string, string) string {

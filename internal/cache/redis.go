@@ -12,8 +12,8 @@ import (
 	"sync"
 	"time"
 
-	"github.com/veloce-ailab/veloce/internal/model"
 	"github.com/redis/go-redis/v9"
+	"github.com/veloce-ailab/veloce/internal/model"
 )
 
 const (
@@ -132,8 +132,15 @@ func Connect(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
+	return connectWithConfig(ctx, config)
+}
+
+func connectWithConfig(ctx context.Context, config RedisConfig) error {
 	if !config.Enabled {
 		return Close()
+	}
+	if ctx == nil {
+		ctx = context.Background()
 	}
 
 	options := &redis.Options{
@@ -151,7 +158,11 @@ func Connect(ctx context.Context) error {
 	client := redis.NewClient(options)
 	if err := client.Ping(ctx).Err(); err != nil {
 		_ = client.Close()
-		return fmt.Errorf("connect to Redis at %q: %w", config.Address, err)
+		if closeErr := Close(); closeErr != nil {
+			log.Printf("failed to close previous Redis connection: %v", closeErr)
+		}
+		log.Printf("Redis unavailable at %q: %v; continuing without Redis", config.Address, err)
+		return nil
 	}
 
 	redisMu.Lock()
