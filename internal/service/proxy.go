@@ -965,10 +965,15 @@ func (s *ProxyService) handleConvertedProviderRequest(c *gin.Context, clientProt
 		return
 	}
 
-	// 敏感词只依赖请求文本，与具体目标无关，循环外检查一次即可
+	// Request-text checks do not depend on the selected channel, so run once before failover.
+	normalized := normalizeProviderRequest(clientProtocol, c.Request.URL.Path, requestBody, targets[0].upstreamModelName())
+	requestText := normalizedRequestText(normalized)
+	if blocked, reason := RiskCheckInputText(targets[0].User.ID, requestText); blocked {
+		c.JSON(http.StatusForbidden, gin.H{"error": reason, "type": "risk_policy"})
+		return
+	}
 	if SensitiveFilterEnabled() {
-		normalized := normalizeProviderRequest(clientProtocol, c.Request.URL.Path, requestBody, targets[0].upstreamModelName())
-		if _, matched := MatchSensitiveWords(normalizedRequestText(normalized)); matched {
+		if _, matched := MatchSensitiveWords(requestText); matched {
 			c.JSON(http.StatusForbidden, gin.H{"error": "Request blocked by content policy", "type": "content_policy"})
 			return
 		}
@@ -1107,6 +1112,38 @@ func (s *ProxyService) forwardProviderRequestToTarget(c *gin.Context, clientProt
 			c.JSON(http.StatusBadRequest, gin.H{"error": "Streaming is not supported when converting upstream protocol", "type": "unsupported_stream"})
 			return true
 		}
+		if RiskNeedsSyncOutputBuffer() {
+			limit := RiskSyncOutputBufferLimit()
+			respBody, readErr := io.ReadAll(io.LimitReader(resp.Body, limit+1))
+			if readErr != nil {
+				log.Printf("failed to buffer streamed response for risk inspection: %v", readErr)
+			}
+			tooLarge := int64(len(respBody)) > limit
+			outputText := extractRiskTextFromStream(respBody)
+			blocked, reason := RiskCheckOutputText(target.User.ID, outputText)
+			usage, ok := parseUsageTokensFromStream(respBody)
+			if !ok {
+				usage = usageTokenCounts{
+					InputTokens:  CountTokens(target.ModelName, string(originalBody)),
+					OutputTokens: CountTokens(target.ModelName, outputText),
+				}
+			}
+			cost, _, _, billErr := s.billDeliveredUsageAndReturnCost(c, target.User, target.APIKey, &target.Channel, &target.ModelConfig, target.billingModelName(), usage, target.billingModel())
+			if billErr != nil {
+				log.Printf("failed to bill buffered streaming usage for user=%d model=%s: %v", target.User.ID, target.ModelName, billErr)
+			}
+			QueueRiskUsage(target.User.ID, cost, usage.InputTokens, usage.OutputTokens)
+			if tooLarge || readErr != nil {
+				c.JSON(http.StatusBadGateway, gin.H{"error": "Response exceeded the risk inspection buffer limit", "type": "risk_policy"})
+				return true
+			}
+			if blocked {
+				c.JSON(http.StatusForbidden, gin.H{"error": reason, "type": "risk_policy"})
+				return true
+			}
+			writeBufferedStreamingResponse(c, resp, respBody)
+			return true
+		}
 		respBody, streamErr := streamUpstreamResponse(c, resp)
 		if streamErr != nil {
 			// The upstream already produced (and charged us for) these tokens, so
@@ -1121,9 +1158,13 @@ func (s *ProxyService) forwardProviderRequestToTarget(c *gin.Context, clientProt
 				OutputTokens: CountTokens(target.ModelName, string(respBody)),
 			}
 		}
-		if _, _, err := s.billDeliveredUsage(c, target.User, target.APIKey, &target.Channel, &target.ModelConfig, target.billingModelName(), usage, target.billingModel()); err != nil {
-			log.Printf("failed to bill streaming usage for user=%d model=%s: %v", target.User.ID, target.ModelName, err)
+		outputText := extractRiskTextFromStream(respBody)
+		_, _ = RiskCheckOutputText(target.User.ID, outputText)
+		cost, _, _, billErr := s.billDeliveredUsageAndReturnCost(c, target.User, target.APIKey, &target.Channel, &target.ModelConfig, target.billingModelName(), usage, target.billingModel())
+		if billErr != nil {
+			log.Printf("failed to bill streaming usage for user=%d model=%s: %v", target.User.ID, target.ModelName, billErr)
 		}
+		QueueRiskUsage(target.User.ID, cost, usage.InputTokens, usage.OutputTokens)
 		return true
 	}
 
@@ -1147,6 +1188,10 @@ func (s *ProxyService) resolveTargets(c *gin.Context, modelName string) ([]*prox
 	user, ok := val.(*model.User)
 	if !ok || user == nil {
 		c.JSON(http.StatusUnauthorized, gin.H{"error": "Unauthorized"})
+		return nil, false
+	}
+	if blocked, reason := RiskRequestGate(user.ID, c.Request.UserAgent()); blocked {
+		c.JSON(http.StatusForbidden, gin.H{"error": reason, "type": "risk_policy"})
 		return nil, false
 	}
 
@@ -1433,9 +1478,12 @@ func (s *ProxyService) handleNonStreamingResponse(c *gin.Context, resp *http.Res
 
 	var responseData map[string]interface{}
 	_ = json.Unmarshal(clientBody, &responseData)
+	outputText := ""
+	if responseData != nil {
+		outputText = providerResponseFromPayload(responseData, clientProtocol).Text
+	}
 	if SensitiveFilterEnabled() && SensitiveFilterScope() == SensitiveFilterScopeRequestResponse && responseData != nil {
-		text := providerResponseFromPayload(responseData, clientProtocol).Text
-		if _, matched := MatchSensitiveWords(text); matched {
+		if _, matched := MatchSensitiveWords(outputText); matched {
 			c.JSON(http.StatusForbidden, gin.H{"error": "Response blocked by content policy", "type": "content_policy"})
 			return
 		}
@@ -1447,8 +1495,15 @@ func (s *ProxyService) handleNonStreamingResponse(c *gin.Context, resp *http.Res
 			OutputTokens: CountTokens(target.ModelName, string(clientBody)),
 		}
 	}
-	if status, message, err := s.billUsage(c, target.User, target.APIKey, &target.Channel, &target.ModelConfig, target.billingModelName(), usage, target.billingModel()); err != nil {
+	cost, status, message, err := s.billUsageAndReturnCost(c, target.User, target.APIKey, &target.Channel, &target.ModelConfig, target.billingModelName(), usage, target.billingModel())
+	if err != nil {
 		c.JSON(status, gin.H{"error": message})
+		return
+	}
+	blocked, reason := RiskCheckOutputText(target.User.ID, outputText)
+	QueueRiskUsage(target.User.ID, cost, usage.InputTokens, usage.OutputTokens)
+	if blocked {
+		c.JSON(http.StatusForbidden, gin.H{"error": reason, "type": "risk_policy"})
 		return
 	}
 
@@ -1470,6 +1525,10 @@ func (s *ProxyService) billUsage(c *gin.Context, user *model.User, apiKey *model
 func (s *ProxyService) billDeliveredUsage(c *gin.Context, user *model.User, apiKey *model.APIKey, channel *model.Channel, modelConfig *model.ModelConfig, modelName string, usage usageTokenCounts, billingModel model.Model) (int, string, error) {
 	_, status, message, err := s.settleUsage(c, user, apiKey, channel, modelConfig, modelName, usage, billingModel, true)
 	return status, message, err
+}
+
+func (s *ProxyService) billDeliveredUsageAndReturnCost(c *gin.Context, user *model.User, apiKey *model.APIKey, channel *model.Channel, modelConfig *model.ModelConfig, modelName string, usage usageTokenCounts, billingModel model.Model) (decimal.Decimal, int, string, error) {
+	return s.settleUsage(c, user, apiKey, channel, modelConfig, modelName, usage, billingModel, true)
 }
 
 func (s *ProxyService) billUsageAndReturnCost(c *gin.Context, user *model.User, apiKey *model.APIKey, channel *model.Channel, modelConfig *model.ModelConfig, modelName string, usage usageTokenCounts, billingModel model.Model) (decimal.Decimal, int, string, error) {
@@ -2174,6 +2233,60 @@ func streamUpstreamResponse(c *gin.Context, resp *http.Response) ([]byte, error)
 	}
 
 	return buffered.Bytes(), nil
+}
+
+func writeBufferedStreamingResponse(c *gin.Context, resp *http.Response, body []byte) error {
+	for key, values := range resp.Header {
+		if !shouldSkipProxyResponseHeader(key, true) {
+			c.Writer.Header()[key] = values
+		}
+	}
+	c.Writer.WriteHeader(resp.StatusCode)
+	if _, err := c.Writer.Write(body); err != nil {
+		return err
+	}
+	if flusher, ok := c.Writer.(http.Flusher); ok {
+		flusher.Flush()
+	}
+	return nil
+}
+
+func extractRiskTextFromStream(body []byte) string {
+	scanner := bufio.NewScanner(bytes.NewReader(body))
+	scanner.Buffer(make([]byte, 0, 64*1024), int(RiskSyncOutputBufferLimit()))
+	var text strings.Builder
+	for scanner.Scan() {
+		line := strings.TrimSpace(scanner.Text())
+		if !strings.HasPrefix(line, "data:") {
+			continue
+		}
+		payload := strings.TrimSpace(strings.TrimPrefix(line, "data:"))
+		if payload == "" || payload == "[DONE]" {
+			continue
+		}
+		var value interface{}
+		if json.Unmarshal([]byte(payload), &value) == nil {
+			appendRiskOutputText(&text, value, "")
+		}
+	}
+	return text.String()
+}
+
+func appendRiskOutputText(output *strings.Builder, value interface{}, parentKey string) {
+	switch typed := value.(type) {
+	case string:
+		if parentKey == "text" || parentKey == "content" || parentKey == "delta" {
+			output.WriteString(typed)
+		}
+	case []interface{}:
+		for _, item := range typed {
+			appendRiskOutputText(output, item, parentKey)
+		}
+	case map[string]interface{}:
+		for key, item := range typed {
+			appendRiskOutputText(output, item, key)
+		}
+	}
 }
 
 func parseUsageTokensFromStream(body []byte) (usageTokenCounts, bool) {

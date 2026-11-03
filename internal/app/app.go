@@ -866,6 +866,7 @@ func Run() error {
 		admin.GET("/stats", statsAPI.GetDashboardStats)
 		admin.GET("/channel-usage", statsAPI.GetChannelUsage)
 		messagechannel.RegisterAdminRoutes(admin)
+		service.RegisterRiskAdminRoutes(admin)
 		service.ApplyAdminRouteHooks(admin)
 	}
 
