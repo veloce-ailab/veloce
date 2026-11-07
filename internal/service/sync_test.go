@@ -36,11 +36,123 @@ func TestParseBillingExpressionWithHourMultipliers(t *testing.T) {
 	if item.TimePricing.Timezone != "Asia/Shanghai" {
 		t.Fatalf("timezone = %q", item.TimePricing.Timezone)
 	}
-	if len(item.TimePricing.Input) != 7 {
-		t.Fatalf("time tier count = %d, want 7", len(item.TimePricing.Input))
+	if !item.HasTimePricing {
+		t.Fatal("expected parsed item to include time pricing")
 	}
-	if !item.TimePricing.Input[0].Price.Equal(decimal.RequireFromString("0.75")) {
+	if len(item.TimePricing.Input) != 2 {
+		t.Fatalf("time tier count = %d, want 2 coalesced ranges", len(item.TimePricing.Input))
+	}
+	if item.TimePricing.Input[0].Start != "09:00" || item.TimePricing.Input[0].End != "12:00" || !item.TimePricing.Input[0].Price.Equal(decimal.RequireFromString("0.75")) {
 		t.Fatalf("first time tier price = %s", item.TimePricing.Input[0].Price)
+	}
+}
+
+func TestParseBillingExpressionWithHourAndWeekdayConditions(t *testing.T) {
+	item, ok := priceItemFromBillingExpression("weekday-model", map[string]interface{}{
+		"billing_expr": `(tier("base", p * 1.25 + c * 2.5 + cr * 0.5 + cc * 0.75)) * ((hour("Asia/Shanghai") >= 9 && hour("Asia/Shanghai") < 12) && (weekday("Asia/Shanghai") >= 1 && weekday("Asia/Shanghai") < 5) ? 2 : 1)`,
+	})
+	if !ok || !item.HasTimePricing {
+		t.Fatal("expected a parsed time-and-weekday billing expression")
+	}
+	if item.TimePricing.Timezone != "Asia/Shanghai" || len(item.TimePricing.Input) != 1 {
+		t.Fatalf("unexpected parsed schedule: %+v", item.TimePricing)
+	}
+	tier := item.TimePricing.Input[0]
+	if tier.Start != "09:00" || tier.End != "12:00" || !tier.Price.Equal(decimal.RequireFromString("2.5")) {
+		t.Fatalf("unexpected weekday price tier: %+v", tier)
+	}
+	if tier.Conditions == nil || len(tier.Conditions.Conditions) != 1 {
+		t.Fatalf("weekday condition was not preserved: %+v", tier.Conditions)
+	}
+	weekdays := tier.Conditions.Conditions[0].Weekdays
+	if len(weekdays) != 4 || weekdays[0] != 1 || weekdays[1] != 2 || weekdays[2] != 3 || weekdays[3] != 4 {
+		t.Fatalf("weekdays = %v, want Monday through Thursday [1 2 3 4]", weekdays)
+	}
+	thursday := time.Date(2026, time.October, 29, 2, 0, 0, 0, time.UTC)
+	if price, ok := timeTierPrice(item.TimePricing.Input, item.TimePricing.Timezone, thursday); !ok || !price.Equal(decimal.RequireFromString("2.5")) {
+		t.Fatalf("Thursday local time should match, got %s, %v", price, ok)
+	}
+	friday := time.Date(2026, time.October, 30, 2, 0, 0, 0, time.UTC)
+	if _, ok := timeTierPrice(item.TimePricing.Input, item.TimePricing.Timezone, friday); ok {
+		t.Fatal("Friday should not match weekday < 5")
+	}
+}
+
+func TestParseBillingExpressionWithOrConditions(t *testing.T) {
+	item, ok := priceItemFromBillingExpression("or-model", map[string]interface{}{
+		"billing_expr": `(tier("base", p * 0.2 + c * 0.4)) * (((hour("Asia/Shanghai") >= 9 || hour("Asia/Shanghai") < 12) && (weekday("Asia/Shanghai") >= 1 || weekday("Asia/Shanghai") < 5)) ? 2 : 1) * (((hour("Asia/Shanghai") >= 14 || hour("Asia/Shanghai") < 18) && (weekday("Asia/Shanghai") >= 1 || weekday("Asia/Shanghai") < 5)) ? 2 : 1)`,
+	})
+	if !ok || !item.HasTimePricing {
+		t.Fatal("expected the OR expression to parse")
+	}
+	if len(item.TimePricing.Input) != 1 || item.TimePricing.Input[0].Start != "00:00" || item.TimePricing.Input[0].End != "00:00" || !item.TimePricing.Input[0].Price.Equal(decimal.RequireFromString("0.8")) {
+		t.Fatalf("unexpected result for the literal OR predicate: %+v", item.TimePricing.Input)
+	}
+}
+
+func TestParseBillingExpressionWithUnitTimeMultiplierMarksPricingProvided(t *testing.T) {
+	item, ok := priceItemFromBillingExpression("unit-multiplier-model", map[string]interface{}{
+		"billing_expr": `tier("base", p * 1 + c * 2) * (hour("UTC") >= 0 ? 1 : 1)`,
+	})
+	if !ok || !item.HasTimePricing {
+		t.Fatal("an explicit unit multiplier should mark time pricing as provided")
+	}
+	if item.TimePricing.Timezone != "UTC" || len(item.TimePricing.Input) != 0 {
+		t.Fatalf("a unit multiplier should produce an empty replacement schedule: %+v", item.TimePricing)
+	}
+}
+
+func TestParseBillingExpressionKeepsSundayAndSaturdayWeekdayNumbers(t *testing.T) {
+	item, ok := priceItemFromBillingExpression("weekend-model", map[string]interface{}{
+		"billing_expr": `tier("base", p * 1) * (weekday("UTC") == 0 || weekday("UTC") == 6 ? 2 : 1)`,
+	})
+	if !ok || len(item.TimePricing.Input) != 1 || item.TimePricing.Input[0].Conditions == nil {
+		t.Fatalf("unexpected weekend pricing parse: %+v", item)
+	}
+	weekdays := item.TimePricing.Input[0].Conditions.Conditions[0].Weekdays
+	if len(weekdays) != 2 || weekdays[0] != 0 || weekdays[1] != 6 {
+		t.Fatalf("weekdays = %v, want Sunday=0 and Saturday=6", weekdays)
+	}
+}
+
+func TestParseBillingExpressionRejectsUnrepresentableTimePricing(t *testing.T) {
+	tests := []struct {
+		name string
+		expr string
+	}{
+		{
+			name: "time condition inside token price formula",
+			expr: `tier("base", p * (hour("UTC") >= 9 ? 2 : 1) + c * 2)`,
+		},
+		{
+			name: "time condition is added instead of multiplied",
+			expr: `tier("base", p * 1 + c * 2) + (hour("UTC") >= 9 ? 2 : 1)`,
+		},
+		{
+			name: "time multiplier combined with token threshold tiers",
+			expr: `(len <= 100 ? tier("short", p * 1 + c * 2) : tier("long", p * 2 + c * 4)) * (hour("UTC") >= 9 ? 2 : 1)`,
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			if _, ok := priceItemFromBillingExpression("unsupported-time-model", map[string]interface{}{"billing_expr": test.expr}); ok {
+				t.Fatal("expected an expression that cannot be represented exactly to be rejected")
+			}
+		})
+	}
+}
+
+func TestParseUpstreamTimePricingField(t *testing.T) {
+	body := []byte(`{"data":[{"model_name":"explicit-time-model","model_ratio":1,"completion_ratio":2,"time_pricing":{"timezone":"Asia/Shanghai","input":[{"start":"08:00","end":"22:00","price":"3"}]}}]}`)
+	items, err := parseUpstreamPriceItems(body)
+	if err != nil {
+		t.Fatalf("parseUpstreamPriceItems returned error: %v", err)
+	}
+	if len(items) != 1 || !items[0].HasTimePricing || items[0].TimePricing.Timezone != "Asia/Shanghai" {
+		t.Fatalf("unexpected explicit time pricing: %+v", items)
+	}
+	if len(items[0].TimePricing.Input) != 1 || !items[0].TimePricing.Input[0].Price.Equal(decimal.NewFromInt(3)) {
+		t.Fatalf("explicit input schedule = %+v", items[0].TimePricing.Input)
 	}
 }
 
@@ -297,8 +409,11 @@ func TestSyncChannelPricesPersistsTieredExpressionAndCacheWritePrice(t *testing.
 	if err != nil {
 		t.Fatalf("open database: %v", err)
 	}
-	if err := database.AutoMigrate(&model.Model{}); err != nil {
+	if err := database.AutoMigrate(&model.Model{}, &model.SystemSetting{}); err != nil {
 		t.Fatalf("migrate database: %v", err)
+	}
+	if err := database.Create(&model.SystemSetting{Key: "ssrf_protection_enabled", Value: "false"}).Error; err != nil {
+		t.Fatalf("disable SSRF guard for local test server: %v", err)
 	}
 	model.DB = database
 	t.Cleanup(func() {
@@ -345,14 +460,126 @@ func TestSyncChannelPricesPersistsTieredExpressionAndCacheWritePrice(t *testing.
 	}
 }
 
+func TestSyncChannelPricesPersistsBillingExpressionTimePricing(t *testing.T) {
+	previousDB := model.DB
+	database, err := gorm.Open(sqlite.Open("file:sync-channel-time-pricing-test?mode=memory&cache=shared"), &gorm.Config{DisableForeignKeyConstraintWhenMigrating: true})
+	if err != nil {
+		t.Fatalf("open database: %v", err)
+	}
+	if err := database.AutoMigrate(&model.Model{}, &model.SystemSetting{}); err != nil {
+		t.Fatalf("migrate database: %v", err)
+	}
+	if err := database.Create(&model.SystemSetting{Key: "ssrf_protection_enabled", Value: "false"}).Error; err != nil {
+		t.Fatalf("disable SSRF guard for local test server: %v", err)
+	}
+	model.DB = database
+	t.Cleanup(func() {
+		model.DB = previousDB
+		sqlDB, _ := database.DB()
+		_ = sqlDB.Close()
+	})
+
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		if request.URL.Path != "/api/pricing" {
+			http.NotFound(writer, request)
+			return
+		}
+		_, _ = writer.Write([]byte(`[{"model_name":"weekday-sync-model","billing_mode":"tiered_expr","billing_expr":"(tier(\"base\", p * 1.25 + c * 2.5 + cr * 0.5)) * ((hour(\"Asia/Shanghai\") >= 9 && hour(\"Asia/Shanghai\") < 12) && (weekday(\"Asia/Shanghai\") >= 1 && weekday(\"Asia/Shanghai\") < 5) ? 2 : 1)"}]`))
+	}))
+	defer server.Close()
+
+	result := NewSyncService().SyncChannelPrices(&model.Channel{ID: 2, Name: "weekday-upstream", BaseURL: server.URL})
+	if result.Error != "" || result.Created != 1 {
+		t.Fatalf("unexpected sync result: %+v", result)
+	}
+	var saved model.Model
+	if err := database.Where("model_name = ?", "weekday-sync-model").First(&saved).Error; err != nil {
+		t.Fatalf("load synced model: %v", err)
+	}
+	if saved.TimePricing.Timezone != "Asia/Shanghai" || len(saved.TimePricing.Input) != 1 {
+		t.Fatalf("time pricing was not persisted: %+v", saved.TimePricing)
+	}
+	tier := saved.TimePricing.Input[0]
+	if tier.Start != "09:00" || tier.End != "12:00" || !tier.Price.Equal(decimal.RequireFromString("2.5")) || tier.Conditions == nil {
+		t.Fatalf("unexpected persisted tier: %+v", tier)
+	}
+	weekdays := tier.Conditions.Conditions[0].Weekdays
+	if len(weekdays) != 4 || weekdays[0] != 1 || weekdays[3] != 4 {
+		t.Fatalf("persisted weekdays = %v, want [1 2 3 4]", weekdays)
+	}
+}
+
+func TestUpsertGlobalModelPricePreservesTimePricingWhenNotProvided(t *testing.T) {
+	previousDB := model.DB
+	database, err := gorm.Open(sqlite.Open("file:sync-preserve-time-pricing-test?mode=memory&cache=shared"), &gorm.Config{DisableForeignKeyConstraintWhenMigrating: true})
+	if err != nil {
+		t.Fatalf("open database: %v", err)
+	}
+	if err := database.AutoMigrate(&model.Model{}); err != nil {
+		t.Fatalf("migrate database: %v", err)
+	}
+	model.DB = database
+	t.Cleanup(func() {
+		model.DB = previousDB
+		sqlDB, _ := database.DB()
+		_ = sqlDB.Close()
+	})
+
+	original := model.TimePricing{
+		Timezone: "Asia/Shanghai",
+		Input:    model.TimePriceTierList{{Start: "09:00", End: "17:00", Price: decimal.NewFromInt(3)}},
+	}
+	if err := database.Create(&model.Model{ModelName: "preserve-time-model", TimePricing: original}).Error; err != nil {
+		t.Fatalf("create model: %v", err)
+	}
+	result := ChannelSyncResult{}
+	provider := ModelProvider{ID: "custom"}
+	if err := upsertGlobalModelPrice("preserve-time-model", 0, decimal.NewFromInt(1), decimal.NewFromInt(2), decimal.Zero, decimal.Zero, nil, nil, nil, nil, model.TimePricing{}, false, provider, &result); err != nil {
+		t.Fatalf("upsert without time pricing: %v", err)
+	}
+	var saved model.Model
+	if err := database.Where("model_name = ?", "preserve-time-model").First(&saved).Error; err != nil {
+		t.Fatalf("load model after missing time pricing: %v", err)
+	}
+	if saved.TimePricing.Timezone != original.Timezone || len(saved.TimePricing.Input) != 1 || !saved.TimePricing.Input[0].Price.Equal(decimal.NewFromInt(3)) {
+		t.Fatalf("existing time pricing was not preserved: %+v", saved.TimePricing)
+	}
+
+	updated := model.TimePricing{
+		Timezone: "Asia/Shanghai",
+		Input:    model.TimePriceTierList{{Start: "08:00", End: "20:00", Price: decimal.NewFromInt(4)}},
+	}
+	if err := upsertGlobalModelPrice("preserve-time-model", 0, decimal.NewFromInt(1), decimal.NewFromInt(2), decimal.Zero, decimal.Zero, nil, nil, nil, nil, updated, true, provider, &result); err != nil {
+		t.Fatalf("upsert provided time pricing: %v", err)
+	}
+	if err := database.Where("model_name = ?", "preserve-time-model").First(&saved).Error; err != nil {
+		t.Fatalf("load model after provided time pricing: %v", err)
+	}
+	if len(saved.TimePricing.Input) != 1 || saved.TimePricing.Input[0].Start != "08:00" || !saved.TimePricing.Input[0].Price.Equal(decimal.NewFromInt(4)) {
+		t.Fatalf("provided time pricing was not applied: %+v", saved.TimePricing)
+	}
+	if err := upsertGlobalModelPrice("preserve-time-model", 0, decimal.NewFromInt(1), decimal.NewFromInt(2), decimal.Zero, decimal.Zero, nil, nil, nil, nil, model.TimePricing{Timezone: "UTC"}, true, provider, &result); err != nil {
+		t.Fatalf("clear explicitly empty time pricing: %v", err)
+	}
+	if err := database.Where("model_name = ?", "preserve-time-model").First(&saved).Error; err != nil {
+		t.Fatalf("load model after clearing time pricing: %v", err)
+	}
+	if len(saved.TimePricing.Input) != 0 || len(saved.TimePricing.Output) != 0 {
+		t.Fatalf("explicitly empty time pricing did not clear the old config: %+v", saved.TimePricing)
+	}
+}
+
 func TestPriceSyncPreviewAndApplyDoesNotMultiplyTieredExpression(t *testing.T) {
 	previousDB := model.DB
 	database, err := gorm.Open(sqlite.Open("file:price-sync-preview-apply-test?mode=memory&cache=shared"), &gorm.Config{DisableForeignKeyConstraintWhenMigrating: true})
 	if err != nil {
 		t.Fatalf("open database: %v", err)
 	}
-	if err := database.AutoMigrate(&model.Channel{}, &model.Model{}); err != nil {
+	if err := database.AutoMigrate(&model.Channel{}, &model.Model{}, &model.SystemSetting{}); err != nil {
 		t.Fatalf("migrate database: %v", err)
+	}
+	if err := database.Create(&model.SystemSetting{Key: "ssrf_protection_enabled", Value: "false"}).Error; err != nil {
+		t.Fatalf("disable SSRF guard for local test server: %v", err)
 	}
 	model.DB = database
 	t.Cleanup(func() {
@@ -378,6 +605,12 @@ func TestPriceSyncPreviewAndApplyDoesNotMultiplyTieredExpression(t *testing.T) {
 				"supported_endpoint_types": ["openai"],
 				"billing_mode": "tiered_expr",
 				"billing_expr": "len \u003C= 272000 ? tier(\"standard\", p * 5 + c * 30 + cr * 0.5 + cc * 6.25) : tier(\"long_context\", p * 10 + c * 45 + cr * 1 + cc * 12.5)"
+			},
+			{
+				"model_name": "zzz-time-model",
+				"quota_type": 0,
+				"billing_mode": "tiered_expr",
+				"billing_expr": "(tier(\"base\", p * 1.25 + c * 2.5 + cr * 0.5)) * ((hour(\"Asia/Shanghai\") >= 9 && hour(\"Asia/Shanghai\") < 12) && (weekday(\"Asia/Shanghai\") >= 1 && weekday(\"Asia/Shanghai\") < 5) ? 2 : 1)"
 			}
 		]`))
 	}))
@@ -393,8 +626,8 @@ func TestPriceSyncPreviewAndApplyDoesNotMultiplyTieredExpression(t *testing.T) {
 	if err != nil {
 		t.Fatalf("PreviewGlobalModelPrices returned error: %v", err)
 	}
-	if len(preview.Models) != 1 {
-		t.Fatalf("preview model count = %d, want 1", len(preview.Models))
+	if len(preview.Models) != 2 {
+		t.Fatalf("preview model count = %d, want 2", len(preview.Models))
 	}
 	item := preview.Models[0]
 	assertDecimalString(t, item.InputPrice, "5")
@@ -405,6 +638,10 @@ func TestPriceSyncPreviewAndApplyDoesNotMultiplyTieredExpression(t *testing.T) {
 	assertTier(t, item.OutputPriceTiers, 272001, "45")
 	assertTier(t, item.CachedInputPriceTiers, 272001, "1")
 	assertTier(t, item.CacheWriteInputPriceTiers, 272001, "12.5")
+	timeItem := preview.Models[1]
+	if timeItem.ModelName != "zzz-time-model" || !timeItem.HasTimePricing || len(timeItem.TimePricing.Input) != 1 {
+		t.Fatalf("time pricing missing from preview item: %+v", timeItem)
+	}
 
 	if _, err := service.ApplyGlobalModelPrices(channel.ID, preview.Models); err != nil {
 		t.Fatalf("ApplyGlobalModelPrices returned error: %v", err)
@@ -421,6 +658,13 @@ func TestPriceSyncPreviewAndApplyDoesNotMultiplyTieredExpression(t *testing.T) {
 	assertTier(t, saved.OutputPriceTiers, 272001, "45")
 	assertTier(t, saved.CachedInputPriceTiers, 272001, "1")
 	assertTier(t, saved.CacheWriteInputPriceTiers, 272001, "12.5")
+	saved = model.Model{}
+	if err := database.Where("model_name = ?", "zzz-time-model").First(&saved).Error; err != nil {
+		t.Fatalf("load time-priced model: %v", err)
+	}
+	if len(saved.TimePricing.Input) != 1 || !saved.TimePricing.Input[0].Price.Equal(decimal.RequireFromString("2.5")) {
+		t.Fatalf("time pricing did not survive preview/apply: %+v", saved.TimePricing)
+	}
 }
 
 func TestUpstreamURLForPathAvoidsDuplicateV1(t *testing.T) {

@@ -31,7 +31,7 @@ const CommunityPricingBaseURL = "https://veloce-community.flweb.cn"
 var (
 	tieredExprThresholdPattern = regexp.MustCompile(`(?i)\b(p|len)\s*(<=|<|>=|>)\s*([0-9]+)`)
 	tieredExprTierPattern      = regexp.MustCompile(`(?is)tier\s*\(\s*"[^"]*"\s*,\s*(.*?)\s*\)`)
-	tieredExprHourRangePattern = regexp.MustCompile(`(?i)hour\s*\(\s*"([^" ]+)"\s*\)\s*>=\s*([0-9]{1,2})\s*(&&|\|\|)\s*hour\s*\(\s*"[^" ]+"\s*\)\s*<\s*([0-9]{1,2})\s*\?\s*([0-9]+(?:\.[0-9]+)?)\s*:\s*1`)
+	timePricingFunctionPattern = regexp.MustCompile(`(?i)\b(?:hour|weekday)\s*\(`)
 )
 
 func NewSyncService() *SyncService {
@@ -81,6 +81,7 @@ type upstreamModelPrice struct {
 	QuotaType                 int
 	UsesBillingExpression     bool
 	TimePricing               model.TimePricing
+	HasTimePricing            bool
 	InputPrice                decimal.Decimal
 	OutputPrice               decimal.Decimal
 	CachedInputPrice          decimal.Decimal
@@ -115,6 +116,7 @@ type ModelSyncItem struct {
 	CachedInputPriceTiers     model.PriceTierList `json:"cached_input_price_tiers"`
 	CacheWriteInputPriceTiers model.PriceTierList `json:"cache_write_input_price_tiers"`
 	TimePricing               model.TimePricing   `json:"time_pricing"`
+	HasTimePricing            bool                `json:"has_time_pricing"`
 	Provider                  string              `json:"provider"`
 	ProviderName              string              `json:"provider_name"`
 	ProviderIconURL           string              `json:"provider_icon_url"`
@@ -235,7 +237,7 @@ func (s *SyncService) SyncChannelPrices(channel *model.Channel) ChannelSyncResul
 			continue
 		}
 		provider := ResolveModelProvider(modelName, "", "")
-		if err := upsertGlobalModelPrice(modelName, item.QuotaType, item.InputPrice, item.OutputPrice, item.CachedInputPrice, item.CacheWriteInputPrice, item.InputPriceTiers, item.OutputPriceTiers, item.CachedInputPriceTiers, item.CacheWriteInputPriceTiers, item.TimePricing, provider, &result); err != nil {
+		if err := upsertGlobalModelPrice(modelName, item.QuotaType, item.InputPrice, item.OutputPrice, item.CachedInputPrice, item.CacheWriteInputPrice, item.InputPriceTiers, item.OutputPriceTiers, item.CachedInputPriceTiers, item.CacheWriteInputPriceTiers, item.TimePricing, item.HasTimePricing, provider, &result); err != nil {
 			result.Error = err.Error()
 			return result
 		}
@@ -423,6 +425,7 @@ func (s *SyncService) buildGlobalPriceSyncPreview(channel *model.Channel, source
 			CachedInputPriceTiers:     item.CachedInputPriceTiers,
 			CacheWriteInputPriceTiers: item.CacheWriteInputPriceTiers,
 			TimePricing:               item.TimePricing,
+			HasTimePricing:            item.HasTimePricing,
 			Provider:                  provider.ID,
 			ProviderName:              provider.Name,
 			ProviderIconURL:           provider.IconURL,
@@ -489,7 +492,7 @@ func applyGlobalPriceItems(items []ModelSyncItem, result *ChannelSyncResult) err
 			continue
 		}
 		provider := ResolveModelProvider(modelName, item.Provider, item.ProviderIconURL)
-		if err := upsertGlobalModelPrice(modelName, item.QuotaType, item.InputPrice, item.OutputPrice, item.CachedInputPrice, item.CacheWriteInputPrice, item.InputPriceTiers, item.OutputPriceTiers, item.CachedInputPriceTiers, item.CacheWriteInputPriceTiers, item.TimePricing, provider, result); err != nil {
+		if err := upsertGlobalModelPrice(modelName, item.QuotaType, item.InputPrice, item.OutputPrice, item.CachedInputPrice, item.CacheWriteInputPrice, item.InputPriceTiers, item.OutputPriceTiers, item.CachedInputPriceTiers, item.CacheWriteInputPriceTiers, item.TimePricing, item.HasTimePricing, provider, result); err != nil {
 			result.Error = err.Error()
 			return err
 		}
@@ -535,7 +538,7 @@ func upsertChannelModel(channel *model.Channel, modelName string, provider Model
 	return err
 }
 
-func upsertGlobalModelPrice(modelName string, quotaType int, inputPrice decimal.Decimal, outputPrice decimal.Decimal, cachedInputPrice decimal.Decimal, cacheWriteInputPrice decimal.Decimal, inputPriceTiers model.PriceTierList, outputPriceTiers model.PriceTierList, cachedInputPriceTiers model.PriceTierList, cacheWriteInputPriceTiers model.PriceTierList, timePricing model.TimePricing, provider ModelProvider, result *ChannelSyncResult) error {
+func upsertGlobalModelPrice(modelName string, quotaType int, inputPrice decimal.Decimal, outputPrice decimal.Decimal, cachedInputPrice decimal.Decimal, cacheWriteInputPrice decimal.Decimal, inputPriceTiers model.PriceTierList, outputPriceTiers model.PriceTierList, cachedInputPriceTiers model.PriceTierList, cacheWriteInputPriceTiers model.PriceTierList, timePricing model.TimePricing, hasTimePricing bool, provider ModelProvider, result *ChannelSyncResult) error {
 	quotaType = normalizeQuotaType(quotaType)
 	var globalModel model.Model
 	queryResult := model.DB.Where(&model.Model{ModelName: modelName}).Limit(1).Find(&globalModel)
@@ -575,7 +578,9 @@ func upsertGlobalModelPrice(modelName string, quotaType int, inputPrice decimal.
 		"output_price_tiers":            model.NormalizePriceTiers(outputPriceTiers),
 		"cached_input_price_tiers":      model.NormalizePriceTiers(cachedInputPriceTiers),
 		"cache_write_input_price_tiers": model.NormalizePriceTiers(cacheWriteInputPriceTiers),
-		"time_pricing":                  model.NormalizeTimePricing(timePricing),
+	}
+	if hasTimePricing {
+		updates["time_pricing"] = model.NormalizeTimePricing(timePricing)
 	}
 	// 同步来源的非 Custom 提供商由模型名自动推断，必须同时刷新分类和图标，
 	// 否则旧的错误分类或失效图标会一直保留在已有模型上。
@@ -1176,6 +1181,8 @@ func priceItemFromMap(modelName string, value map[string]interface{}) (upstreamM
 	outputPriceTiers, outputTiersOK := firstPriceTierListValue(value, outputPriceTierKeys()...)
 	cachedInputPriceTiers, cachedInputTiersOK := firstPriceTierListValue(value, cachedInputPriceTierKeys()...)
 	cacheWriteInputPriceTiers, _ := firstPriceTierListValue(value, cacheWriteInputPriceTierKeys()...)
+	timePricing, hasTimePricing := timePricingFromMap(value)
+	billingExpression := firstStringValue(value, "", "billing_expr", "billingExpr")
 	usesBillingExpression := false
 	if exprPrice, ok := priceItemFromBillingExpression(modelName, value); ok {
 		usesBillingExpression = true
@@ -1194,6 +1201,14 @@ func priceItemFromMap(modelName string, value map[string]interface{}) (upstreamM
 		outputTiersOK = len(outputPriceTiers) > 0
 		cachedInputTiersOK = len(cachedInputPriceTiers) > 0
 		cacheWriteInputOK = true
+		if exprPrice.HasTimePricing {
+			timePricing = exprPrice.TimePricing
+			hasTimePricing = true
+		}
+	} else if containsTimePricingExpression(billingExpression) {
+		// Do not silently apply the base ratio when a time expression cannot be
+		// represented by the supported schedule parser.
+		return upstreamModelPrice{}, false
 	}
 	genericPriceTiers, genericTiersOK := firstPriceTierListValue(value, "price_tiers", "priceTiers", "prices_tiers", "pricesTiers", "model_price_tiers", "modelPriceTiers", "model_tiers", "modelTiers", "tiers")
 	modelRatio, modelRatioOK := firstDecimalValue(value, "model_ratio", "modelRatio")
@@ -1275,7 +1290,38 @@ func priceItemFromMap(modelName string, value map[string]interface{}) (upstreamM
 		OutputPriceTiers:          model.NormalizePriceTiers(outputPriceTiers),
 		CachedInputPriceTiers:     model.NormalizePriceTiers(cachedInputPriceTiers),
 		CacheWriteInputPriceTiers: model.NormalizePriceTiers(cacheWriteInputPriceTiers),
+		TimePricing:               timePricing,
+		HasTimePricing:            hasTimePricing,
 	}, true
+}
+
+func timePricingFromMap(value map[string]interface{}) (model.TimePricing, bool) {
+	for _, key := range []string{"time_pricing", "timePricing", "time_based_pricing", "timeBasedPricing"} {
+		raw, exists := value[key]
+		if !exists {
+			continue
+		}
+		var encoded []byte
+		var err error
+		if text, ok := raw.(string); ok {
+			encoded = []byte(text)
+		} else {
+			encoded, err = json.Marshal(raw)
+			if err != nil {
+				return model.TimePricing{}, false
+			}
+		}
+		var pricing model.TimePricing
+		if err := json.Unmarshal(encoded, &pricing); err != nil {
+			return model.TimePricing{}, false
+		}
+		return model.NormalizeTimePricing(pricing), true
+	}
+	return model.TimePricing{}, false
+}
+
+func containsTimePricingExpression(expr string) bool {
+	return timePricingFunctionPattern.MatchString(expr)
 }
 
 type tieredExprPrices struct {
@@ -1330,7 +1376,17 @@ func priceItemFromBillingExpression(modelName string, value map[string]interface
 		CachedInputPrice:      basePrices.CachedInput,
 		CacheWriteInputPrice:  basePrices.CacheWriteInput,
 	}
-	item.TimePricing = timePricingFromExpression(expr, basePrices)
+	var timePricingParsed bool
+	item.TimePricing, item.HasTimePricing, timePricingParsed = timePricingFromExpression(expr, basePrices)
+	if containsTimePricingExpression(expr) && !timePricingParsed {
+		return upstreamModelPrice{}, false
+	}
+	if tierPrices != nil && (len(item.TimePricing.Input)+len(item.TimePricing.Output)+len(item.TimePricing.CachedInput)+len(item.TimePricing.CacheWriteInput) > 0) {
+		// The current model schema applies time prices before token tiers. It
+		// cannot faithfully represent a time multiplier applied to every token
+		// tier, so skip this expression instead of silently syncing wrong rates.
+		return upstreamModelPrice{}, false
+	}
 	if tierPrices != nil {
 		item.InputPriceTiers = model.NormalizePriceTiers(model.PriceTierList{{
 			MinTokens: threshold,
@@ -1356,48 +1412,565 @@ func priceItemFromBillingExpression(modelName string, value map[string]interface
 	return item, true
 }
 
-func timePricingFromExpression(expr string, base tieredExprPrices) model.TimePricing {
-	matches := tieredExprHourRangePattern.FindAllStringSubmatch(expr, -1)
-	if len(matches) == 0 {
-		return model.TimePricing{}
+type timeMultiplierPredicate struct {
+	logic    string
+	children []*timeMultiplierPredicate
+	field    string
+	operator string
+	value    int
+}
+
+func (predicate *timeMultiplierPredicate) matches(hour, weekday int) bool {
+	if predicate == nil {
+		return false
 	}
-	pricing := model.TimePricing{Timezone: matches[0][1]}
-	type hourCondition struct {
-		start, end int
-		operator   string
-		factor     decimal.Decimal
-	}
-	conditions := make([]hourCondition, 0, len(matches))
-	for _, match := range matches {
-		start, startErr := strconv.Atoi(match[2])
-		end, endErr := strconv.Atoi(match[4])
-		factor, factorErr := decimal.NewFromString(match[5])
-		if startErr != nil || endErr != nil || factorErr != nil || start < 0 || start > 23 || end < 0 || end > 23 || match[1] != pricing.Timezone {
-			continue
-		}
-		conditions = append(conditions, hourCondition{start: start, end: end, operator: match[3], factor: factor})
-	}
-	for hour := 0; hour < 24; hour++ {
-		factor := decimal.NewFromInt(1)
-		for _, condition := range conditions {
-			active := hour >= condition.start && hour < condition.end
-			if condition.operator == "||" {
-				active = hour >= condition.start || hour < condition.end
-			}
-			if active {
-				factor = factor.Mul(condition.factor)
+	if predicate.logic == "and" {
+		for _, child := range predicate.children {
+			if !child.matches(hour, weekday) {
+				return false
 			}
 		}
-		if factor.Equal(decimal.NewFromInt(1)) {
+		return len(predicate.children) > 0
+	}
+	if predicate.logic == "or" {
+		for _, child := range predicate.children {
+			if child.matches(hour, weekday) {
+				return true
+			}
+		}
+		return false
+	}
+	value := hour
+	if predicate.field == "weekday" {
+		value = weekday
+	}
+	switch predicate.operator {
+	case ">":
+		return value > predicate.value
+	case ">=":
+		return value >= predicate.value
+	case "<":
+		return value < predicate.value
+	case "<=":
+		return value <= predicate.value
+	case "==":
+		return value == predicate.value
+	case "!=":
+		return value != predicate.value
+	default:
+		return false
+	}
+}
+
+type timePredicateParser struct {
+	source   string
+	position int
+	timezone string
+}
+
+func parseTimePredicate(source string) (*timeMultiplierPredicate, string, bool) {
+	parser := &timePredicateParser{source: source}
+	predicate, ok := parser.parseOr()
+	parser.skipSpaces()
+	if !ok || parser.position != len(parser.source) || parser.timezone == "" {
+		return nil, "", false
+	}
+	if _, err := time.LoadLocation(parser.timezone); err != nil {
+		return nil, "", false
+	}
+	return predicate, parser.timezone, true
+}
+
+func (parser *timePredicateParser) parseOr() (*timeMultiplierPredicate, bool) {
+	left, ok := parser.parseAnd()
+	if !ok {
+		return nil, false
+	}
+	children := []*timeMultiplierPredicate{left}
+	for parser.consume("||") {
+		right, ok := parser.parseAnd()
+		if !ok {
+			return nil, false
+		}
+		children = append(children, right)
+	}
+	if len(children) == 1 {
+		return left, true
+	}
+	return &timeMultiplierPredicate{logic: "or", children: children}, true
+}
+
+func (parser *timePredicateParser) parseAnd() (*timeMultiplierPredicate, bool) {
+	left, ok := parser.parsePrimary()
+	if !ok {
+		return nil, false
+	}
+	children := []*timeMultiplierPredicate{left}
+	for parser.consume("&&") {
+		right, ok := parser.parsePrimary()
+		if !ok {
+			return nil, false
+		}
+		children = append(children, right)
+	}
+	if len(children) == 1 {
+		return left, true
+	}
+	return &timeMultiplierPredicate{logic: "and", children: children}, true
+}
+
+func (parser *timePredicateParser) parsePrimary() (*timeMultiplierPredicate, bool) {
+	if parser.consume("(") {
+		predicate, ok := parser.parseOr()
+		if !ok || !parser.consume(")") {
+			return nil, false
+		}
+		return predicate, true
+	}
+	return parser.parseComparison()
+}
+
+func (parser *timePredicateParser) parseComparison() (*timeMultiplierPredicate, bool) {
+	field, ok := parser.readIdentifier()
+	if !ok {
+		return nil, false
+	}
+	field = strings.ToLower(field)
+	if field != "hour" && field != "weekday" {
+		return nil, false
+	}
+	if !parser.consume("(") {
+		return nil, false
+	}
+	timezone, ok := parser.readQuotedString()
+	if !ok || !parser.consume(")") {
+		return nil, false
+	}
+	if parser.timezone == "" {
+		parser.timezone = timezone
+	} else if parser.timezone != timezone {
+		return nil, false
+	}
+	operator, ok := parser.readComparisonOperator()
+	if !ok {
+		return nil, false
+	}
+	value, ok := parser.readInteger()
+	if !ok {
+		return nil, false
+	}
+	return &timeMultiplierPredicate{field: field, operator: operator, value: value}, true
+}
+
+func (parser *timePredicateParser) skipSpaces() {
+	for parser.position < len(parser.source) && (parser.source[parser.position] == ' ' || parser.source[parser.position] == '\t' || parser.source[parser.position] == '\n' || parser.source[parser.position] == '\r') {
+		parser.position++
+	}
+}
+
+func (parser *timePredicateParser) consume(token string) bool {
+	parser.skipSpaces()
+	if !strings.HasPrefix(parser.source[parser.position:], token) {
+		return false
+	}
+	parser.position += len(token)
+	return true
+}
+
+func (parser *timePredicateParser) readIdentifier() (string, bool) {
+	parser.skipSpaces()
+	start := parser.position
+	for parser.position < len(parser.source) {
+		char := parser.source[parser.position]
+		if (char >= 'a' && char <= 'z') || (char >= 'A' && char <= 'Z') || char == '_' {
+			parser.position++
 			continue
 		}
-		start, end := fmt.Sprintf("%02d:00", hour), fmt.Sprintf("%02d:00", (hour+1)%24)
-		pricing.Input = append(pricing.Input, model.TimePriceTier{Start: start, End: end, Price: base.Input.Mul(factor)})
-		pricing.Output = append(pricing.Output, model.TimePriceTier{Start: start, End: end, Price: base.Output.Mul(factor)})
-		pricing.CachedInput = append(pricing.CachedInput, model.TimePriceTier{Start: start, End: end, Price: base.CachedInput.Mul(factor)})
-		pricing.CacheWriteInput = append(pricing.CacheWriteInput, model.TimePriceTier{Start: start, End: end, Price: base.CacheWriteInput.Mul(factor)})
+		break
 	}
-	return model.NormalizeTimePricing(pricing)
+	if start == parser.position {
+		return "", false
+	}
+	return parser.source[start:parser.position], true
+}
+
+func (parser *timePredicateParser) readQuotedString() (string, bool) {
+	parser.skipSpaces()
+	if parser.position >= len(parser.source) || parser.source[parser.position] != '"' {
+		return "", false
+	}
+	start := parser.position
+	parser.position++
+	escaped := false
+	for parser.position < len(parser.source) {
+		char := parser.source[parser.position]
+		parser.position++
+		if escaped {
+			escaped = false
+			continue
+		}
+		if char == '\\' {
+			escaped = true
+			continue
+		}
+		if char == '"' {
+			value, err := strconv.Unquote(parser.source[start:parser.position])
+			return value, err == nil && strings.TrimSpace(value) != ""
+		}
+	}
+	return "", false
+}
+
+func (parser *timePredicateParser) readComparisonOperator() (string, bool) {
+	for _, operator := range []string{">=", "<=", "==", "!=", ">", "<"} {
+		if parser.consume(operator) {
+			return operator, true
+		}
+	}
+	return "", false
+}
+
+func (parser *timePredicateParser) readInteger() (int, bool) {
+	parser.skipSpaces()
+	start := parser.position
+	if parser.position < len(parser.source) && parser.source[parser.position] == '-' {
+		parser.position++
+	}
+	digitsStart := parser.position
+	for parser.position < len(parser.source) && parser.source[parser.position] >= '0' && parser.source[parser.position] <= '9' {
+		parser.position++
+	}
+	if digitsStart == parser.position {
+		return 0, false
+	}
+	value, err := strconv.Atoi(parser.source[start:parser.position])
+	return value, err == nil
+}
+
+type timeMultiplierClause struct {
+	predicate *timeMultiplierPredicate
+	whenTrue  decimal.Decimal
+	whenFalse decimal.Decimal
+}
+
+func extractTimeMultiplierClauses(expr string) ([]timeMultiplierClause, string, bool) {
+	hasTimeFunction := containsTimePricingExpression(expr)
+	clauses := make([]timeMultiplierClause, 0)
+	timezone := ""
+	for question := 0; question < len(expr); question++ {
+		if expr[question] != '?' {
+			continue
+		}
+		open, depth := enclosingParenthesis(expr, question)
+		if open < 0 {
+			continue
+		}
+		colon := ternaryColonAtDepth(expr, question, depth)
+		close := matchingParenthesis(expr, open)
+		if colon < 0 || close < colon {
+			continue
+		}
+		if !timeMultiplierContextSupported(expr, question) {
+			return nil, "", false
+		}
+		conditionText := strings.TrimSpace(expr[open+1 : question])
+		if !containsTimePricingExpression(conditionText) {
+			continue
+		}
+		predicate, clauseTimezone, ok := parseTimePredicate(conditionText)
+		if !ok {
+			return nil, "", false
+		}
+		whenTrue, trueErr := decimal.NewFromString(strings.TrimSpace(expr[question+1 : colon]))
+		whenFalse, falseErr := decimal.NewFromString(strings.TrimSpace(expr[colon+1 : close]))
+		if trueErr != nil || falseErr != nil || whenTrue.IsNegative() || whenFalse.IsNegative() {
+			return nil, "", false
+		}
+		if timezone == "" {
+			timezone = clauseTimezone
+		} else if timezone != clauseTimezone {
+			return nil, "", false
+		}
+		clauses = append(clauses, timeMultiplierClause{predicate: predicate, whenTrue: whenTrue, whenFalse: whenFalse})
+		question = close
+	}
+	if hasTimeFunction && len(clauses) == 0 {
+		return nil, "", false
+	}
+	return clauses, timezone, true
+}
+
+func timeMultiplierContextSupported(source string, position int) bool {
+	stack := make([]int, 0)
+	inString, escaped := false, false
+	for index := 0; index < position; index++ {
+		char := source[index]
+		if inString {
+			if escaped {
+				escaped = false
+			} else if char == '\\' {
+				escaped = true
+			} else if char == '"' {
+				inString = false
+			}
+			continue
+		}
+		if char == '"' {
+			inString = true
+			continue
+		}
+		switch char {
+		case '(':
+			stack = append(stack, index)
+		case ')':
+			if len(stack) > 0 {
+				stack = stack[:len(stack)-1]
+			}
+		}
+	}
+	if len(stack) == 0 {
+		return false
+	}
+
+	insideTier := false
+	factorOpen := -1
+	for _, open := range stack {
+		prefix := strings.TrimRight(source[:open], " \t\r\n")
+		wordStart := len(prefix)
+		for wordStart > 0 {
+			char := prefix[wordStart-1]
+			if (char >= 'a' && char <= 'z') || (char >= 'A' && char <= 'Z') || char == '_' {
+				wordStart--
+				continue
+			}
+			break
+		}
+		if strings.EqualFold(prefix[wordStart:], "tier") {
+			insideTier = true
+		}
+
+		previous := open - 1
+		for previous >= 0 && (source[previous] == ' ' || source[previous] == '\t' || source[previous] == '\r' || source[previous] == '\n') {
+			previous--
+		}
+		if previous >= 0 && source[previous] == '*' && factorOpen < 0 {
+			factorOpen = open
+		}
+	}
+	if insideTier || factorOpen < 0 {
+		return false
+	}
+
+	factorClose := matchingParenthesis(source, factorOpen)
+	if factorClose < position || factorClose < 0 {
+		return false
+	}
+	if strings.ContainsAny(source[factorOpen+1:factorClose], "+-") {
+		return false
+	}
+
+	next := factorClose + 1
+	for next < len(source) && (source[next] == ' ' || source[next] == '\t' || source[next] == '\r' || source[next] == '\n') {
+		next++
+	}
+	for next < len(source) && source[next] == ')' {
+		next++
+		for next < len(source) && (source[next] == ' ' || source[next] == '\t' || source[next] == '\r' || source[next] == '\n') {
+			next++
+		}
+	}
+	return next == len(source) || source[next] == '*'
+}
+
+func enclosingParenthesis(source string, position int) (int, int) {
+	stack := make([]int, 0)
+	inString, escaped := false, false
+	for index := 0; index < position; index++ {
+		char := source[index]
+		if inString {
+			if escaped {
+				escaped = false
+			} else if char == '\\' {
+				escaped = true
+			} else if char == '"' {
+				inString = false
+			}
+			continue
+		}
+		if char == '"' {
+			inString = true
+			continue
+		}
+		switch char {
+		case '(':
+			stack = append(stack, index)
+		case ')':
+			if len(stack) > 0 {
+				stack = stack[:len(stack)-1]
+			}
+		}
+	}
+	if len(stack) == 0 {
+		return -1, 0
+	}
+	return stack[len(stack)-1], len(stack)
+}
+
+func ternaryColonAtDepth(source string, question, targetDepth int) int {
+	depth := targetDepth
+	inString, escaped := false, false
+	for index := question + 1; index < len(source); index++ {
+		char := source[index]
+		if inString {
+			if escaped {
+				escaped = false
+			} else if char == '\\' {
+				escaped = true
+			} else if char == '"' {
+				inString = false
+			}
+			continue
+		}
+		if char == '"' {
+			inString = true
+			continue
+		}
+		switch char {
+		case '(':
+			depth++
+		case ')':
+			if depth == targetDepth {
+				return -1
+			}
+			depth--
+		case ':':
+			if depth == targetDepth {
+				return index
+			}
+		}
+	}
+	return -1
+}
+
+func matchingParenthesis(source string, open int) int {
+	depth := 0
+	inString, escaped := false, false
+	for index := open; index < len(source); index++ {
+		char := source[index]
+		if inString {
+			if escaped {
+				escaped = false
+			} else if char == '\\' {
+				escaped = true
+			} else if char == '"' {
+				inString = false
+			}
+			continue
+		}
+		if char == '"' {
+			inString = true
+			continue
+		}
+		switch char {
+		case '(':
+			depth++
+		case ')':
+			depth--
+			if depth == 0 {
+				return index
+			}
+		}
+	}
+	return -1
+}
+
+func timePricingFromExpression(expr string, base tieredExprPrices) (model.TimePricing, bool, bool) {
+	clauses, timezone, parsed := extractTimeMultiplierClauses(expr)
+	if !parsed {
+		return model.TimePricing{}, false, false
+	}
+	if len(clauses) == 0 {
+		return model.TimePricing{}, false, true
+	}
+	type window struct {
+		start    string
+		end      string
+		factor   decimal.Decimal
+		weekdays []int
+	}
+	windows := make(map[string]*window)
+	one := decimal.NewFromInt(1)
+	for weekday := 0; weekday < 7; weekday++ {
+		factors := make([]decimal.Decimal, 24)
+		for hour := 0; hour < 24; hour++ {
+			factor := one
+			for _, clause := range clauses {
+				if clause.predicate.matches(hour, weekday) {
+					factor = factor.Mul(clause.whenTrue)
+				} else {
+					factor = factor.Mul(clause.whenFalse)
+				}
+			}
+			factors[hour] = factor
+		}
+		for hour := 0; hour < 24; {
+			factor := factors[hour]
+			if factor.Equal(one) {
+				hour++
+				continue
+			}
+			startHour := hour
+			for hour < 24 && factors[hour].Equal(factor) {
+				hour++
+			}
+			start := fmt.Sprintf("%02d:00", startHour)
+			end := fmt.Sprintf("%02d:00", hour%24)
+			key := start + "|" + end + "|" + factor.String()
+			if windows[key] == nil {
+				windows[key] = &window{start: start, end: end, factor: factor}
+			}
+			windows[key].weekdays = append(windows[key].weekdays, weekday)
+		}
+	}
+	if len(windows) == 0 {
+		return model.TimePricing{Timezone: timezone}, true, true
+	}
+	ordered := make([]window, 0, len(windows))
+	for _, item := range windows {
+		ordered = append(ordered, *item)
+	}
+	sort.Slice(ordered, func(i, j int) bool {
+		if ordered[i].start != ordered[j].start {
+			return ordered[i].start < ordered[j].start
+		}
+		if ordered[i].end != ordered[j].end {
+			return ordered[i].end < ordered[j].end
+		}
+		return ordered[i].factor.LessThan(ordered[j].factor)
+	})
+	pricing := model.TimePricing{Timezone: timezone}
+	for _, item := range ordered {
+		weekdays := append([]int(nil), item.weekdays...)
+		if len(weekdays) == 7 {
+			weekdays = nil
+		}
+		condition := model.PricingCondition{
+			Type:  model.PricingConditionGroup,
+			Logic: "and",
+			Conditions: []model.PricingCondition{{
+				Type:     model.PricingConditionLeaf,
+				Field:    model.PricingConditionTimeRange,
+				Start:    item.start,
+				End:      item.end,
+				Weekdays: weekdays,
+			}},
+		}
+		pricing.Input = append(pricing.Input, model.TimePriceTier{Start: item.start, End: item.end, Price: base.Input.Mul(item.factor), Conditions: &condition})
+		pricing.Output = append(pricing.Output, model.TimePriceTier{Start: item.start, End: item.end, Price: base.Output.Mul(item.factor), Conditions: &condition})
+		pricing.CachedInput = append(pricing.CachedInput, model.TimePriceTier{Start: item.start, End: item.end, Price: base.CachedInput.Mul(item.factor), Conditions: &condition})
+		pricing.CacheWriteInput = append(pricing.CacheWriteInput, model.TimePriceTier{Start: item.start, End: item.end, Price: base.CacheWriteInput.Mul(item.factor), Conditions: &condition})
+	}
+	return model.NormalizeTimePricing(pricing), true, true
 }
 
 func tieredExprThreshold(expr string) (string, string, int, bool) {
