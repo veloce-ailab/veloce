@@ -169,7 +169,8 @@ type WalletLimitUsage struct {
 	CreatedAt           time.Time `gorm:"index" json:"created_at"`
 }
 
-// EmailVerificationCode stores short-lived codes for password registration.
+// EmailVerificationCode stores short-lived codes for registration, password
+// changes, and password recovery.
 type EmailVerificationCode struct {
 	ID               uint       `gorm:"primaryKey" json:"id"`
 	Email            string     `gorm:"index;size:100;not null" json:"email"`

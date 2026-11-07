@@ -299,6 +299,8 @@ type systemSettingsResponse struct {
 	PasskeyEnabled                       bool   `json:"passkey_enabled"`
 	PasswordLoginEnabled                 bool   `json:"password_login_enabled"`
 	PasswordRegistrationEnabled          bool   `json:"password_registration_enabled"`
+	PasswordResetEmailEnabled            bool   `json:"password_reset_email_enabled"`
+	PasswordResetPhoneEnabled            bool   `json:"password_reset_phone_enabled"`
 	TokenAPIEnabled                      bool   `json:"token_api_enabled"`
 	PasswordHCaptchaEnabled              bool   `json:"password_hcaptcha_enabled"`
 	HCaptchaSiteKey                      string `json:"hcaptcha_site_key"`
@@ -1407,6 +1409,8 @@ func currentPublicSystemSettings() systemSettingsResponse {
 		PasskeyEnabled:                       settingBool("passkey_enabled", false),
 		PasswordLoginEnabled:                 settingBool("password_login_enabled", true),
 		PasswordRegistrationEnabled:          settingBool("password_registration_enabled", true),
+		PasswordResetEmailEnabled:            service.PasswordResetEmailEnabled(),
+		PasswordResetPhoneEnabled:            service.PasswordResetPhoneEnabled(),
 		TokenAPIEnabled:                      settingBool("token_api_enabled", true),
 		PasswordHCaptchaEnabled:              settingBool("password_hcaptcha_enabled", false),
 		HCaptchaSiteKey:                      settingString("hcaptcha_site_key", ""),

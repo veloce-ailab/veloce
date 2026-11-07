@@ -347,6 +347,129 @@ func Run() error {
 				}
 				c.JSON(http.StatusOK, gin.H{"message": "Verification code sent"})
 			})
+		auth.POST("/password/reset-email-code",
+			middleware.NewSensitiveRateLimiter(middleware.SensitiveRateLimitConfig{Name: "password-reset-email-code-ip", Limit: 5, Window: time.Minute}),
+			middleware.NewSensitiveRateLimiter(middleware.SensitiveRateLimitConfig{Name: "password-reset-email-code-email", Limit: 3, Window: time.Minute, IdentityFields: []string{"email"}}),
+			func(c *gin.Context) {
+				var input struct {
+					Email        string `json:"email"`
+					CaptchaToken string `json:"captcha_token"`
+				}
+				if err := c.ShouldBindJSON(&input); err != nil {
+					c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+					return
+				}
+				if err := authService.SendPasswordResetEmailCode(input.Email, input.CaptchaToken); err != nil {
+					service.RecordAuditLog(service.AuditLogInput{
+						LogType:    service.AuditLogTypeLogin,
+						Action:     "password_reset_code_failed",
+						Resource:   "password_reset",
+						Method:     c.Request.Method,
+						Path:       c.Request.URL.Path,
+						StatusCode: http.StatusBadRequest,
+						IPAddress:  c.ClientIP(),
+						UserAgent:  c.Request.UserAgent(),
+						Message:    err.Error(),
+					})
+					writeAuthError(c, err)
+					return
+				}
+				// The response is intentionally identical for unknown accounts.
+				c.JSON(http.StatusOK, gin.H{"message": "If the account exists, a verification code has been sent"})
+			})
+		auth.POST("/password/reset-sms-code",
+			middleware.NewSensitiveRateLimiter(middleware.SensitiveRateLimitConfig{Name: "password-reset-sms-code-ip", Limit: 5, Window: time.Minute}),
+			middleware.NewSensitiveRateLimiter(middleware.SensitiveRateLimitConfig{Name: "password-reset-sms-code-phone", Limit: 2, Window: time.Minute, IdentityFields: []string{"phone"}}),
+			func(c *gin.Context) {
+				var input struct {
+					Phone        string `json:"phone"`
+					CaptchaToken string `json:"captcha_token"`
+				}
+				if err := c.ShouldBindJSON(&input); err != nil {
+					c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+					return
+				}
+				if err := authService.SendPasswordResetPhoneCode(input.Phone, input.CaptchaToken); err != nil {
+					service.RecordAuditLog(service.AuditLogInput{
+						LogType:    service.AuditLogTypeLogin,
+						Action:     "password_reset_code_failed",
+						Resource:   "password_reset",
+						Method:     c.Request.Method,
+						Path:       c.Request.URL.Path,
+						StatusCode: http.StatusBadRequest,
+						IPAddress:  c.ClientIP(),
+						UserAgent:  c.Request.UserAgent(),
+						Message:    err.Error(),
+					})
+					writeAuthError(c, err)
+					return
+				}
+				c.JSON(http.StatusOK, gin.H{"message": "If the account exists, a verification code has been sent"})
+			})
+		auth.POST("/password/reset",
+			middleware.NewSensitiveRateLimiter(middleware.SensitiveRateLimitConfig{Name: "password-reset-ip", Limit: 10, Window: time.Minute}),
+			middleware.NewSensitiveRateLimiter(middleware.SensitiveRateLimitConfig{Name: "password-reset-identity", Limit: 5, Window: time.Minute, IdentityFields: []string{"email", "phone"}}),
+			func(c *gin.Context) {
+				var input struct {
+					Email       string `json:"email"`
+					Phone       string `json:"phone"`
+					Code        string `json:"code"`
+					NewPassword string `json:"new_password"`
+				}
+				if err := c.ShouldBindJSON(&input); err != nil {
+					c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+					return
+				}
+
+				var (
+					user *model.User
+					err  error
+				)
+				switch {
+				case strings.TrimSpace(input.Email) != "":
+					user, err = authService.ResetPasswordWithEmailCode(service.EmailPasswordResetInput{
+						Email:       input.Email,
+						Code:        input.Code,
+						NewPassword: input.NewPassword,
+					})
+				case strings.TrimSpace(input.Phone) != "":
+					user, err = authService.ResetPasswordWithPhoneCode(service.PhonePasswordResetInput{
+						Phone:       input.Phone,
+						Code:        input.Code,
+						NewPassword: input.NewPassword,
+					})
+				default:
+					c.JSON(http.StatusBadRequest, gin.H{"error": "email or phone is required"})
+					return
+				}
+				if err != nil {
+					service.RecordAuditLog(service.AuditLogInput{
+						LogType:    service.AuditLogTypeLogin,
+						Action:     "password_reset_failed",
+						Resource:   "password_reset",
+						Method:     c.Request.Method,
+						Path:       c.Request.URL.Path,
+						StatusCode: http.StatusBadRequest,
+						IPAddress:  c.ClientIP(),
+						UserAgent:  c.Request.UserAgent(),
+						Message:    err.Error(),
+					})
+					writeAuthError(c, err)
+					return
+				}
+				service.RecordAuditLog(service.AuditLogInput{
+					LogType:    service.AuditLogTypeLogin,
+					Action:     "password_reset_success",
+					Resource:   "password_reset",
+					UserID:     uintPtr(user.ID),
+					Method:     c.Request.Method,
+					Path:       c.Request.URL.Path,
+					StatusCode: http.StatusOK,
+					IPAddress:  c.ClientIP(),
+					UserAgent:  c.Request.UserAgent(),
+				})
+				c.JSON(http.StatusOK, gin.H{"message": "Password has been reset"})
+			})
 		auth.POST("/phone/sms-code",
 			middleware.NewSensitiveRateLimiter(middleware.SensitiveRateLimitConfig{Name: "phone-code-ip", Limit: 5, Window: time.Minute}),
 			middleware.NewSensitiveRateLimiter(middleware.SensitiveRateLimitConfig{Name: "phone-code-phone", Limit: 2, Window: time.Minute, IdentityFields: []string{"phone"}}),
