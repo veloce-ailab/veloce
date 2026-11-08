@@ -1,83 +1,97 @@
-Veloce
+<div align="center">
 
-Your better personal agent and ai site
+# Veloce
 
-English | [简体中文](README_zh.md)
+**An open-source AI API gateway and platform operations backend.**
 
-Veloce is an AI API gateway and marketplace designed for building AI platforms and developer ecosystems, providing a production-ready foundation for AI API management, authentication, billing, and upstream provider management.
+Manage AI providers, route compatible APIs, and operate an AI service from one place.
+
+[English](README.md) · [简体中文](README_zh.md)
+
+![Go](https://img.shields.io/badge/Go-1.26.3-00ADD8?logo=go&logoColor=white)
+![License](https://img.shields.io/badge/License-AGPL--3.0-blue)
+
+</div>
+
+---
+
+## Overview
+
+Veloce provides the backend foundation for AI platforms and developer services. It brings upstream model access, API routing, identity and access management, usage metering, billing, and operational tools together in one self-hostable service.
+
+This repository contains the Go backend. The web frontend is maintained separately in [`veloce-web`](https://github.com/veloce-ailab/veloce-web) and is required as a sibling directory when building from source.
 
 ## Features
 
-- OpenAI-compatible API gateway
-- Multiple upstream provider management
-- OIDC authentication
-- Passkey (WebAuthn) authentication
-- API Key authentication
-- User balance management
-- Token usage logging
-- Basic billing system
-- Image generation support
-- Modern administration dashboard
+| Area | Capabilities |
+| --- | --- |
+| **AI API gateway** | OpenAI-compatible endpoints, plus Claude Messages and Gemini-compatible request formats; streaming and unified task-status endpoints. |
+| **Multimodal APIs** | Text and chat, image generation and editing, audio, moderation, and video task endpoints, subject to upstream provider support. |
+| **Provider operations** | Manage upstream channels and models, synchronize model lists and prices, configure access and routing, and monitor channel usage. |
+| **Accounts and access** | Password and OIDC sign-in, Passkeys (WebAuthn), API keys, user/group management, access controls, and rate limiting. |
+| **Usage and billing** | Usage and audit logs, balance management, pricing, subscriptions, payment orders, and user usage statistics. |
+| **Operations and extensibility** | Admin APIs, status monitoring, scheduled jobs, announcements, optional Redis, multi-node operation, and WebAssembly-based plugins. |
 
-## Repository Structure
+## Quick start
 
-internal/    Internal code
-cmd/         Cli module
+### Requirements
 
-## Building
+- Go **1.26.3** (see [`go.mod`](go.mod))
+- Node.js **22** and Corepack/Yarn for building the frontend
+- The matching [`veloce-web`](https://github.com/veloce-ailab/veloce-web) source checkout
 
-Requirements
+The backend's `go.mod` uses a local replacement for `veloce-web`, so the source layout should look like this:
 
-- Go (version specified in "go.mod")
-- Node.js
-- Yarn
-
-1. Build the Frontend
-```
-cd web
-yarn install
-yarn build
+```text
+workspace/
+├── veloce/       # this repository
+└── web/          # veloce-web repository
 ```
 
-> Tips: You should put your frontend code in ../web
-2. Build the Backend
-```
+### Build and run
+
+Run these commands from the `veloce` directory:
+
+```bash
+# Check out the frontend beside this repository (use a matching release/tag when applicable)
+git clone https://github.com/veloce-ailab/veloce-web.git ../web
+
+# Build the frontend
+cd ../web
+corepack enable
+corepack yarn install --immutable
+corepack yarn build
+
+# Configure and start the backend
 cd ../veloce
-go build
-```
-Or run it directly during development:
-```
+cp .env.example .env
+# Edit .env; set a strong JWT_SECRET and configure authentication as needed
 go run .
 ```
-After the frontend has been built, the backend will serve the generated frontend assets.
+
+By default, the service listens on port `8080` and uses SQLite. Once running, the API is available at `http://localhost:8080/v1` and the web interface is served by the backend.
+
+### Example: list available models
+
+Create an API key in the web interface, then use it with the gateway:
+
+```bash
+curl http://localhost:8080/v1/models \
+  -H "Authorization: Bearer YOUR_API_KEY"
+```
 
 ## Configuration
 
-Copy ".env.example" to ".env" and configure your environment.
+Start with [`.env.example`](.env.example). Common settings include:
 
-```
-APP_ENV=development
-PORT=8080
-DB_DRIVER=sqlite
-DB_PATH=veloce.db
-DB_DSN=
-DB_MAX_OPEN_CONNS=25
-DB_MAX_IDLE_CONNS=10
-DB_CONN_MAX_LIFETIME_SECONDS=3600
-JWT_SECRET=your-secure-jwt-secret-here
-OIDC_ISSUER=https://your-oidc-provider.com
-OIDC_CLIENT_ID=your-client-id
-OIDC_CLIENT_SECRET=your-client-secret
-OIDC_REDIRECT_URL=http://localhost:8080/auth/callback
-BOOTSTRAP_ADMIN_OIDC_SUBS=
-BOOTSTRAP_ADMIN_EMAILS=
-```
+- `PORT`: HTTP listen port (default: `8080`)
+- `DB_DRIVER`: `sqlite` (default), `postgres`, or `mysql`
+- `DB_PATH`: SQLite database path
+- `DB_DSN` or `DATABASE_URL`: PostgreSQL/MySQL connection string
+- `JWT_SECRET`: secret used to sign dashboard sessions
+- `OIDC_*`: optional OIDC provider settings
 
-Enterprise features are enabled manually by selecting Enterprise Mode in the admin runtime-mode setting; no environment flag is required. One deployment represents one enterprise. Switching back to operation or personal mode preserves enterprise data while disabling enterprise APIs.
-
-`DB_DRIVER` accepts `sqlite` (default), `postgres`, and `mysql`. SQLite uses
-`DB_PATH`. For PostgreSQL or MySQL, set `DB_DSN` (or `DATABASE_URL`) and the
-application will create or migrate its schema at startup.
+For PostgreSQL or MySQL, set the driver and connection string before starting the service. The application creates or migrates its schema on startup.
 
 ```dotenv
 # PostgreSQL
@@ -89,30 +103,37 @@ DB_DRIVER=mysql
 DB_DSN=flai:change-me@tcp(127.0.0.1:3306)/flai?charset=utf8mb4&parseTime=True&loc=Local
 ```
 
+Redis is optional. Multi-node deployments can be enabled in the system settings; configure a unique `NODE_NAME` for each instance before enabling the mode.
+
 ### Migrate SQLite to PostgreSQL or MySQL
 
-Point `DB_PATH` at the SQLite source file. Set `DB_DRIVER` and `DB_DSN` to the
-empty PostgreSQL or MySQL target database, then run the one-way migration:
+Set `DB_PATH` to the source SQLite file and `DB_DRIVER`/`DB_DSN` to an **empty** target database, then run the one-way migration:
 
 ```bash
-DB_DRIVER=postgres
-DB_PATH=veloce.db
-DB_DSN=host=127.0.0.1 user=flai password=change-me dbname=flai port=5432 sslmode=disable
+DB_DRIVER=postgres \
+DB_PATH=veloce.db \
+DB_DSN='host=127.0.0.1 user=flai password=change-me dbname=flai port=5432 sslmode=disable' \
 go run . --migrate
 ```
 
-The source SQLite file is read only. The command refuses a target that already
-contains application tables, copies data in batches, and exits when complete.
-The target settings remain in place for normal startup after migration.
-Dangling model configurations whose channel or model was deleted in SQLite are
-discarded. Other nullable dangling references are cleared, while records with a
-required missing parent are discarded, so PostgreSQL and MySQL can create valid
-foreign keys.
+The source SQLite file is read-only. The command refuses a target that already contains application tables, copies data in batches, and exits when complete. The target settings can then be used for normal startup.
+
+## Repository layout
+
+```text
+cmd/flai/          Alternate application entry point
+internal/adapters/ Upstream protocol adapters
+internal/api/      HTTP API handlers
+internal/app/      Application startup, routes, and server
+internal/channel/  Messaging-platform integrations
+internal/model/    Database models and migrations
+internal/service/  Gateway, billing, auth, plugin, and operations services
+```
 
 ## License
 
-We use AGPL. See the LICENSE file for licensing information.
+Veloce is licensed under the [GNU Affero General Public License v3.0](LICENSE).
 
-## Special thanks
+## Acknowledgements
 
-[Linuxdo](https://linux.do)
+Thanks to [Linux.do](https://linux.do) and everyone contributing to the project.
