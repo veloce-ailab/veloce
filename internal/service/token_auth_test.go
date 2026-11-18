@@ -45,6 +45,7 @@ func TestNormalizeTokenAuthRedirectURI(t *testing.T) {
 		"http://[::1]:8080/cb":             "http://[::1]:8080/cb",
 		"com.example.app://callback":       "com.example.app://callback",
 		"com.example.app://auth/cb?keep=1": "com.example.app://auth/cb?keep=1",
+		"com.veloce.aiapp://auth/callback": "com.veloce.aiapp://auth/callback",
 	}
 	for raw, want := range accepted {
 		got, err := NormalizeTokenAuthRedirectURI(raw)

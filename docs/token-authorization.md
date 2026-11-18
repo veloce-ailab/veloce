@@ -187,8 +187,18 @@ WebView）直接调用 `<站点>/v1/...`，这些请求都跨域，因此网关�
 ### 6.3 参考客户端：veloce-aiapp
 
 `veloce-aiapp`（Capacitor 打包的聊天客户端）就是这个流程的完整实现：
-设置里填写站点地址 → 跳转 `/authorize` → 回到应用内的 `auth-callback.html` 用 `state`
-换取令牌 → 自动填入 API Key 并把接口地址设为 `<站点>/v1`。
+设置里填写站点地址 → 打开 `/authorize` → 回调只带 `state` → 用 `state` 换取令牌 →
+自动填入 API Key 并把接口地址设为 `<站点>/v1`。
+
+回调地址按运行形态区分：
+
+| 运行形态 | redirect_uri | 说明 |
+| --- | --- | --- |
+| 原生应用（Android/iOS） | `com.veloce.aiapp://auth/callback` | 自定义协议，Android 用 intent-filter、iOS 用 CFBundleURLSchemes 注册；授权页在系统浏览器打开，回调直接把应用拉回前台 |
+| 浏览器 / PWA | `<应用地址>/auth-callback.html` | 静态回调页，兑换成功后跳回首页 |
+
+注意自定义协议的 scheme 必须带点（反向域名），服务端只接受这种形态，
+避免与应用商店里的通用 scheme 冲突。
 
 ### 6.1 与 PKCE 的对比
 
