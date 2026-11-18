@@ -3,7 +3,8 @@ flai.exe
 flai.exe~
 dist/
 web/
-docs/
+docs/*
+!docs/token-authorization.md
 app/
 ref/
 desktop/

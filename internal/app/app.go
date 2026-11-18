@@ -115,6 +115,7 @@ func Run() error {
 	passkeyAPI := &api.PasskeyAPI{AuthService: authService}
 	clusterAPI := &api.ClusterAPI{}
 	schedulerAPI := &api.SchedulerAPI{}
+	tokenAuthAPI := &api.TokenAuthAPI{}
 
 	// Public routes
 	r.GET("/health", func(c *gin.Context) {
@@ -133,6 +134,9 @@ func Run() error {
 	r.GET("/api/community/skills", proxyCommunityAPI)
 	r.GET("/api/community/skills/:id", proxyCommunityAPI)
 	r.GET("/api/avatars/:id", userAPI.GetAvatar)
+	r.POST("/api/oauth/token",
+		middleware.NewSensitiveRateLimiter(middleware.SensitiveRateLimitConfig{Name: "token-auth-exchange-ip", Limit: 20, Window: time.Minute}),
+		tokenAuthAPI.Exchange)
 	r.GET("/api/pricing", modelAPI.Pricing)
 	r.GET("/api/payment/yipay/return", paymentAPI.Return)
 	r.GET("/api/payment/yipay/notify", paymentAPI.Notify)
@@ -1091,6 +1095,9 @@ func Run() error {
 				})
 				c.JSON(http.StatusOK, gin.H{"code": code, "expires_in": 300})
 			})
+		userGroup.POST("/oauth/authorize",
+			middleware.NewSensitiveRateLimiter(middleware.SensitiveRateLimitConfig{Name: "token-auth-authorize-ip", Limit: 20, Window: time.Minute}),
+			tokenAuthAPI.Authorize)
 		userGroup.GET("/api-keys", userAPI.ListAPIKeys)
 		userGroup.POST("/api-keys", userAPI.CreateAPIKey)
 		userGroup.PUT("/api-keys/:id", userAPI.UpdateAPIKey)
