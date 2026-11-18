@@ -11,6 +11,7 @@ import (
 	"mime"
 	"net/http"
 	"net/url"
+	"os"
 	"path"
 	"strings"
 	"sync"
@@ -117,6 +118,12 @@ func Run() error {
 	schedulerAPI := &api.SchedulerAPI{}
 	tokenAuthAPI := &api.TokenAuthAPI{}
 
+	// Cross-origin access for browser clients and native shells (Capacitor).
+	corsMiddleware := middleware.NewCORS(middleware.CORSConfig{AllowedOrigins: corsAllowedOrigins()})
+	noContent := func(c *gin.Context) { c.Status(http.StatusNoContent) }
+	r.OPTIONS("/v1/*any", corsMiddleware, noContent)
+	r.OPTIONS("/api/oauth/*any", corsMiddleware, noContent)
+
 	// Public routes
 	r.GET("/health", func(c *gin.Context) {
 		c.JSON(200, gin.H{"status": "ok"})
@@ -135,6 +142,7 @@ func Run() error {
 	r.GET("/api/community/skills/:id", proxyCommunityAPI)
 	r.GET("/api/avatars/:id", userAPI.GetAvatar)
 	r.POST("/api/oauth/token",
+		corsMiddleware,
 		middleware.NewSensitiveRateLimiter(middleware.SensitiveRateLimitConfig{Name: "token-auth-exchange-ip", Limit: 20, Window: time.Minute}),
 		tokenAuthAPI.Exchange)
 	r.GET("/api/pricing", modelAPI.Pricing)
@@ -851,14 +859,14 @@ func Run() error {
 
 	// AI Gateway routes (Proxy)
 	rootGateway := r.Group("")
-	rootGateway.Use(middleware.ExternalAPIMiddleware(), middleware.AuthMiddleware(authService), rateLimiter.Middleware())
+	rootGateway.Use(corsMiddleware, middleware.ExternalAPIMiddleware(), middleware.AuthMiddleware(authService), rateLimiter.Middleware())
 	{
 		rootGateway.GET("/balance", proxyService.HandleTokenBalance)
 		rootGateway.GET("/user/balance", proxyService.HandleUserBalance)
 	}
 
 	gateway := r.Group("/v1")
-	gateway.Use(middleware.ExternalAPIMiddleware(), middleware.AuthMiddleware(authService), rateLimiter.Middleware(), service.UpstreamFailureLogMiddleware())
+	gateway.Use(corsMiddleware, middleware.ExternalAPIMiddleware(), middleware.AuthMiddleware(authService), rateLimiter.Middleware(), service.UpstreamFailureLogMiddleware())
 	{
 		gateway.GET("/models", proxyService.ListModels)
 		gateway.GET("/balance", proxyService.HandleTokenBalance)
@@ -1381,4 +1389,24 @@ func userIDPtr(user *model.User) *uint {
 		return nil
 	}
 	return uintPtr(user.ID)
+}
+
+// corsAllowedOrigins parses CORS_ALLOWED_ORIGINS (comma separated origins) and
+// defaults to "*": the gateway authenticates every request with a bearer token
+// and never relies on cookies, so a wildcard cannot leak a browser session.
+func corsAllowedOrigins() []string {
+	raw := strings.TrimSpace(os.Getenv("CORS_ALLOWED_ORIGINS"))
+	if raw == "" {
+		return []string{"*"}
+	}
+	origins := make([]string, 0, 4)
+	for _, part := range strings.Split(raw, ",") {
+		if trimmed := strings.TrimSpace(part); trimmed != "" {
+			origins = append(origins, trimmed)
+		}
+	}
+	if len(origins) == 0 {
+		return []string{"*"}
+	}
+	return origins
 }

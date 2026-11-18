@@ -170,6 +170,26 @@ Content-Type: application/json
 6. **没有撤销通知**：应用拿到令牌后，用户在令牌页停用/删除该令牌即等于撤销；应用会
    在下一次调用时收到 401。
 
+### 6.2 跨域（CORS）
+
+拿到令牌之后，客户端通常还要从自己的源（浏览器页面、Capacitor 的 `https://localhost`
+WebView）直接调用 `<站点>/v1/...`，这些请求都跨域，因此网关内置了 CORS 中间件
+（`internal/middleware/cors.go`）：
+
+- 覆盖 `/v1/*`（含 Claude Messages、OpenAI 兼容、模型列表等）与 `POST /api/oauth/token`；
+- 预检请求由 `r.OPTIONS("/v1/*any")`、`r.OPTIONS("/api/oauth/*any")` 直接返回 204；
+- 允许的请求头包括 `Authorization`、`x-api-key`、`anthropic-version`、`anthropic-beta` 等；
+- 默认 `Access-Control-Allow-Origin: *`：这些接口只用 Bearer 令牌认证、不使用 Cookie，
+  通配符不会把浏览器会话暴露给第三方站点；
+- 需要收紧时设置环境变量 `CORS_ALLOWED_ORIGINS`（逗号分隔的精确 origin），未命中的来源
+  不会再收到跨域响应头。
+
+### 6.3 参考客户端：veloce-aiapp
+
+`veloce-aiapp`（Capacitor 打包的聊天客户端）就是这个流程的完整实现：
+设置里填写站点地址 → 跳转 `/authorize` → 回到应用内的 `auth-callback.html` 用 `state`
+换取令牌 → 自动填入 API Key 并把接口地址设为 `<站点>/v1`。
+
 ### 6.1 与 PKCE 的对比
 
 | 维度 | OAuth PKCE | 本机制 |
