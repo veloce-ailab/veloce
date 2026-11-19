@@ -790,8 +790,7 @@ func parseServerGeminiGenerateContentResponse(responseData map[string]interface{
 
 func readServerChatStream(body io.Reader, protocol proxyProtocol, onTextDelta func(string) error) (*ChatExecutorResult, usageTokenCounts, bool, error) {
 	result := &ChatExecutorResult{}
-	var usage usageTokenCounts
-	var usageOK bool
+	var usage streamUsageAccumulator
 	scanner := bufio.NewScanner(body)
 	scanner.Buffer(make([]byte, 0, 64*1024), maxBufferedStreamBytes)
 
@@ -813,11 +812,8 @@ func readServerChatStream(body io.Reader, protocol proxyProtocol, onTextDelta fu
 		if err := json.Unmarshal([]byte(payload), &data); err != nil {
 			return nil
 		}
-		delta, parsedUsage, parsedUsageOK := applyServerChatStreamEvent(result, protocol, eventName, data)
-		if parsedUsageOK {
-			usage = parsedUsage
-			usageOK = true
-		}
+		usage.observe(data)
+		delta := applyServerChatStreamEvent(result, protocol, eventName, data)
 		if delta != "" && onTextDelta != nil {
 			if err := onTextDelta(delta); err != nil {
 				return err
@@ -830,7 +826,7 @@ func readServerChatStream(body io.Reader, protocol proxyProtocol, onTextDelta fu
 		line := scanner.Text()
 		if strings.TrimSpace(line) == "" {
 			if err := flush(); err != nil {
-				return result, usage, usageOK, err
+				return result, usage.counts, usage.ok, err
 			}
 			continue
 		}
@@ -843,37 +839,25 @@ func readServerChatStream(body io.Reader, protocol proxyProtocol, onTextDelta fu
 		}
 	}
 	if err := scanner.Err(); err != nil {
-		return result, usage, usageOK, err
+		return result, usage.counts, usage.ok, err
 	}
 	if err := flush(); err != nil {
-		return result, usage, usageOK, err
+		return result, usage.counts, usage.ok, err
 	}
 	finalizeServerChatStreamResult(result)
-	return result, usage, usageOK, nil
+	return result, usage.counts, usage.ok, nil
 }
 
-func applyServerChatStreamEvent(result *ChatExecutorResult, protocol proxyProtocol, eventName string, data map[string]interface{}) (string, usageTokenCounts, bool) {
-	if usage, ok := parseUsageTokens(data); ok {
-		switch protocol {
-		case protocolOpenAI:
-			return applyOpenAIChatStreamEvent(result, data), usage, true
-		case protocolResponses:
-			return applyOpenAIResponsesStreamEvent(result, eventName, data), usage, true
-		case protocolClaude:
-			return applyClaudeStreamEvent(result, data), usage, true
-		default:
-			return "", usage, true
-		}
-	}
+func applyServerChatStreamEvent(result *ChatExecutorResult, protocol proxyProtocol, eventName string, data map[string]interface{}) string {
 	switch protocol {
 	case protocolOpenAI:
-		return applyOpenAIChatStreamEvent(result, data), usageTokenCounts{}, false
+		return applyOpenAIChatStreamEvent(result, data)
 	case protocolResponses:
-		return applyOpenAIResponsesStreamEvent(result, eventName, data), usageTokenCounts{}, false
+		return applyOpenAIResponsesStreamEvent(result, eventName, data)
 	case protocolClaude:
-		return applyClaudeStreamEvent(result, data), usageTokenCounts{}, false
+		return applyClaudeStreamEvent(result, data)
 	default:
-		return "", usageTokenCounts{}, false
+		return ""
 	}
 }
 

@@ -88,6 +88,7 @@ type normalizedAIRequest struct {
 	MaxTokens      int
 	Temperature    *float64
 	Stream         bool
+	StreamOptions  map[string]interface{}
 	Tools          []interface{}
 	ToolChoice     interface{}
 }
@@ -993,7 +994,7 @@ func (s *ProxyService) handleConvertedProviderRequest(c *gin.Context, clientProt
 				modelName, index+1, len(targets), target.Channel.ID, target.Channel.UserChannelID,
 			)
 		}
-		if s.forwardProviderRequestToTarget(c, clientProtocol, target, requestBody, originalBody, index == len(targets)-1) {
+		if s.forwardProviderRequestToTarget(c, clientProtocol, target, requestBody, index == len(targets)-1) {
 			return
 		}
 	}
@@ -1003,7 +1004,7 @@ func (s *ProxyService) handleConvertedProviderRequest(c *gin.Context, clientProt
 // It returns true when the response (success or error) has been written to
 // the client, and false when nothing was written and the caller may fail over
 // to the next target. When finalAttempt is true every error is written.
-func (s *ProxyService) forwardProviderRequestToTarget(c *gin.Context, clientProtocol proxyProtocol, target *proxyTarget, requestBody map[string]interface{}, originalBody []byte, finalAttempt bool) bool {
+func (s *ProxyService) forwardProviderRequestToTarget(c *gin.Context, clientProtocol proxyProtocol, target *proxyTarget, requestBody map[string]interface{}, finalAttempt bool) bool {
 	normalized := normalizeProviderRequest(clientProtocol, c.Request.URL.Path, requestBody, target.upstreamModelName())
 	pluginUpstream, isPluginUpstream := PluginUpstreamForType(target.Channel.Type)
 	if strings.HasPrefix(strings.TrimSpace(target.Channel.Type), pluginUpstreamPrefix) && !isPluginUpstream {
@@ -1121,13 +1122,10 @@ func (s *ProxyService) forwardProviderRequestToTarget(c *gin.Context, clientProt
 			tooLarge := int64(len(respBody)) > limit
 			outputText := extractRiskTextFromStream(respBody)
 			blocked, reason := RiskCheckOutputText(target.User.ID, outputText)
-			usage, ok := parseUsageTokensFromStream(respBody)
-			if !ok {
-				usage = usageTokenCounts{
-					InputTokens:  CountTokens(target.ModelName, string(originalBody)),
-					OutputTokens: CountTokens(target.ModelName, outputText),
-				}
-			}
+			var meter streamUsageMeter
+			meter.consume(respBody)
+			meter.finish()
+			usage := meter.usageOrEstimate(target.ModelName, normalized)
 			cost, _, _, billErr := s.billDeliveredUsageAndReturnCost(c, target.User, target.APIKey, &target.Channel, &target.ModelConfig, target.billingModelName(), usage, target.billingModel())
 			if billErr != nil {
 				log.Printf("failed to bill buffered streaming usage for user=%d model=%s: %v", target.User.ID, target.ModelName, billErr)
@@ -1144,20 +1142,16 @@ func (s *ProxyService) forwardProviderRequestToTarget(c *gin.Context, clientProt
 			writeBufferedStreamingResponse(c, resp, respBody)
 			return true
 		}
-		respBody, streamErr := streamUpstreamResponse(c, resp)
+		var meter streamUsageMeter
+		respBody, streamErr := streamUpstreamResponse(c, resp, &meter)
+		meter.finish()
 		if streamErr != nil {
 			// The upstream already produced (and charged us for) these tokens, so
 			// a client disconnect or a truncated stream must still be billed for
 			// what was streamed rather than returning early for free.
 			log.Printf("failed to stream upstream response: %v", streamErr)
 		}
-		usage, ok := parseUsageTokensFromStream(respBody)
-		if !ok {
-			usage = usageTokenCounts{
-				InputTokens:  CountTokens(target.ModelName, string(originalBody)),
-				OutputTokens: CountTokens(target.ModelName, string(respBody)),
-			}
-		}
+		usage := meter.usageOrEstimate(target.ModelName, normalized)
 		outputText := extractRiskTextFromStream(respBody)
 		_, _ = RiskCheckOutputText(target.User.ID, outputText)
 		cost, _, _, billErr := s.billDeliveredUsageAndReturnCost(c, target.User, target.APIKey, &target.Channel, &target.ModelConfig, target.billingModelName(), usage, target.billingModel())
@@ -1168,7 +1162,7 @@ func (s *ProxyService) forwardProviderRequestToTarget(c *gin.Context, clientProt
 		return true
 	}
 
-	s.handleNonStreamingResponse(c, resp, target, originalBody, prepared.URL, prepared.Body, upstreamProtocol, clientProtocol, clientProtocol == protocolResponses)
+	s.handleNonStreamingResponse(c, resp, target, normalized, prepared.URL, prepared.Body, upstreamProtocol, clientProtocol, clientProtocol == protocolResponses)
 	return true
 }
 
@@ -1436,7 +1430,7 @@ func RoutingAlgorithm(value string) string {
 	}
 }
 
-func (s *ProxyService) handleNonStreamingResponse(c *gin.Context, resp *http.Response, target *proxyTarget, originalBody []byte, upstreamURL string, upstreamBody []byte, upstreamProtocol proxyProtocol, clientProtocol proxyProtocol, responses bool) {
+func (s *ProxyService) handleNonStreamingResponse(c *gin.Context, resp *http.Response, target *proxyTarget, normalized normalizedAIRequest, upstreamURL string, upstreamBody []byte, upstreamProtocol proxyProtocol, clientProtocol proxyProtocol, responses bool) {
 	if resp.StatusCode >= http.StatusBadRequest {
 		respBody, err := io.ReadAll(resp.Body)
 		if err != nil {
@@ -1488,12 +1482,15 @@ func (s *ProxyService) handleNonStreamingResponse(c *gin.Context, resp *http.Res
 			return
 		}
 	}
-	usage, ok := parseUsageTokens(responseData)
+	upstreamData := responseData
+	if upstreamProtocol != clientProtocol {
+		upstreamData = nil
+		_ = json.Unmarshal(respBody, &upstreamData)
+	}
+	usage, ok := parseUsageTokens(upstreamData)
 	if !ok {
-		usage = usageTokenCounts{
-			InputTokens:  CountTokens(target.ModelName, string(originalBody)),
-			OutputTokens: CountTokens(target.ModelName, string(clientBody)),
-		}
+		upstreamOutput := providerResponseFromPayload(upstreamData, upstreamProtocol)
+		usage = estimateProxyUsage(target.ModelName, normalized, upstreamOutput.Text+estimatedJSONText(upstreamOutput.ToolCalls))
 	}
 	cost, status, message, err := s.billUsageAndReturnCost(c, target.User, target.APIKey, &target.Channel, &target.ModelConfig, target.billingModelName(), usage, target.billingModel())
 	if err != nil {
@@ -2193,7 +2190,7 @@ func isStreamingResponse(resp *http.Response) bool {
 	return strings.Contains(strings.ToLower(resp.Header.Get("Content-Type")), "text/event-stream")
 }
 
-func streamUpstreamResponse(c *gin.Context, resp *http.Response) ([]byte, error) {
+func streamUpstreamResponse(c *gin.Context, resp *http.Response, meter *streamUsageMeter) ([]byte, error) {
 	for k, v := range resp.Header {
 		if !shouldSkipProxyResponseHeader(k, true) {
 			c.Writer.Header()[k] = v
@@ -2209,6 +2206,7 @@ func streamUpstreamResponse(c *gin.Context, resp *http.Response) ([]byte, error)
 		n, readErr := resp.Body.Read(chunk)
 		if n > 0 {
 			data := chunk[:n]
+			meter.consume(data)
 			if buffered.Len() < maxBufferedStreamBytes {
 				remaining := maxBufferedStreamBytes - buffered.Len()
 				if len(data) > remaining {
@@ -2287,35 +2285,6 @@ func appendRiskOutputText(output *strings.Builder, value interface{}, parentKey 
 			appendRiskOutputText(output, item, key)
 		}
 	}
-}
-
-func parseUsageTokensFromStream(body []byte) (usageTokenCounts, bool) {
-	scanner := bufio.NewScanner(bytes.NewReader(body))
-	scanner.Buffer(make([]byte, 0, 64*1024), maxBufferedStreamBytes)
-
-	var usage usageTokenCounts
-	var found bool
-	for scanner.Scan() {
-		line := strings.TrimSpace(scanner.Text())
-		if !strings.HasPrefix(line, "data:") {
-			continue
-		}
-		payload := strings.TrimSpace(strings.TrimPrefix(line, "data:"))
-		if payload == "" || payload == "[DONE]" {
-			continue
-		}
-
-		var data map[string]interface{}
-		if err := json.Unmarshal([]byte(payload), &data); err != nil {
-			continue
-		}
-		if parsedUsage, ok := parseUsageTokens(data); ok {
-			usage = parsedUsage
-			found = true
-		}
-	}
-
-	return usage, found
 }
 
 func writeUpstreamResponse(c *gin.Context, resp *http.Response, respBody []byte) {
@@ -2825,6 +2794,7 @@ func normalizeOpenAIRequest(path string, requestBody map[string]interface{}, mod
 		Tools:       interfaceSliceFromRequest(requestBody, "tools"),
 		ToolChoice:  requestBody["tool_choice"],
 	}
+	normalized.StreamOptions, _ = requestBody["stream_options"].(map[string]interface{})
 	if isResponsesPath(path) {
 		input := normalizeResponsesInput(requestBody["input"])
 		normalized.ResponsesInput = input
@@ -2984,6 +2954,9 @@ func openAIChatCompletionsPayloadMap(request normalizedAIRequest) (map[string]in
 	}
 	if request.Stream {
 		payload["stream"] = true
+		if request.StreamOptions != nil {
+			payload["stream_options"] = request.StreamOptions
+		}
 	}
 	if len(request.Tools) > 0 {
 		payload["tools"] = request.Tools
@@ -4208,7 +4181,6 @@ func cachedInputTokensFromUsage(usage map[string]interface{}) int {
 func cacheWriteInputTokensFromUsage(usage map[string]interface{}) (int, bool) {
 	if tokens, ok := firstTokenValue(usage,
 		"cache_write_input_tokens", "cacheWriteInputTokens",
-		"cache_creation_input_tokens", "cacheCreationInputTokens",
 		"cache_write_5m_input_tokens", "cacheWrite5mInputTokens",
 		"cache_creation_5m_input_tokens", "cacheCreation5mInputTokens",
 	); ok {
@@ -4223,7 +4195,9 @@ func cacheWriteInputTokensFromUsage(usage map[string]interface{}) (int, bool) {
 			return tokens, true
 		}
 	}
-	return 0, false
+	// Anthropic's top-level creation count includes both TTL buckets. Prefer
+	// the 5-minute breakdown above so the 1-hour bucket is not counted twice.
+	return firstTokenValue(usage, "cache_creation_input_tokens", "cacheCreationInputTokens")
 }
 
 func cacheWrite1hInputTokensFromUsage(usage map[string]interface{}) (int, bool) {
