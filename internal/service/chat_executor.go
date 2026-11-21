@@ -280,6 +280,10 @@ func serverChatCandidates(user *model.User, modelName string, userChannelID uint
 // the caller can accumulate it across an agent loop. It reuses the same group and
 // channel multipliers, balance deduction, token log, and referral commission.
 func (s *ProxyService) billServerUsage(c *gin.Context, user *model.User, apiKey *model.APIKey, channel *model.Channel, modelConfig *model.ModelConfig, modelName string, usage usageTokenCounts, chargeBalance bool) (decimal.Decimal, int, string, error) {
+	if clientRequestCanceled(c) {
+		recordCanceledUsage(c, user, apiKey, channel, modelConfig, modelName, usage, modelConfig.Model)
+		return decimal.Zero, 0, "", nil
+	}
 	groupMultiplier, err := effectiveUserGroupMultiplier(user, channel.ID, modelConfig.ID)
 	if err != nil {
 		return decimal.Zero, http.StatusInternalServerError, "User group not found", err
@@ -324,6 +328,12 @@ func (s *ProxyService) billServerUsage(c *gin.Context, user *model.User, apiKey 
 		tx.Rollback()
 		cache.InvalidateUserBillingBalance(billingContext, user.ID)
 		return decimal.Zero, http.StatusInternalServerError, "Failed to read updated balance", err
+	}
+	if clientRequestCanceled(c) {
+		tx.Rollback()
+		cache.InvalidateUserBillingBalance(billingContext, user.ID)
+		recordCanceledUsage(c, user, apiKey, channel, modelConfig, modelName, usage, modelConfig.Model)
+		return decimal.Zero, 0, "", nil
 	}
 	if err := tx.Commit().Error; err != nil {
 		cache.InvalidateUserBillingBalance(billingContext, user.ID)

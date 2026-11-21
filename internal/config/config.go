@@ -12,21 +12,23 @@ import (
 )
 
 var (
-	Environment              string
-	Port                     string
-	DBDriver                 string
-	DBPath                   string
-	DBDSN                    string
-	DBMaxOpenConns           int
-	DBMaxIdleConns           int
-	DBConnMaxLifetimeSeconds int
-	DataPath                 string
-	NodeName                 string
-	JWTSecret                string
-	OIDCIssuer               string
-	OIDCClientID             string
-	OIDCSecret               string
-	OIDCRedirect             string
+	Environment                          string
+	Port                                 string
+	UpstreamRequestTimeoutSeconds        int = 600
+	UpstreamResponseHeaderTimeoutSeconds int = 120
+	DBDriver                             string
+	DBPath                               string
+	DBDSN                                string
+	DBMaxOpenConns                       int
+	DBMaxIdleConns                       int
+	DBConnMaxLifetimeSeconds             int
+	DataPath                             string
+	NodeName                             string
+	JWTSecret                            string
+	OIDCIssuer                           string
+	OIDCClientID                         string
+	OIDCSecret                           string
+	OIDCRedirect                         string
 
 	BootstrapAdminEmails   string
 	BootstrapAdminOIDCSubs string
@@ -40,6 +42,8 @@ func Init() {
 
 	Environment = getEnv("APP_ENV", "development")
 	Port = getEnv("PORT", "8080")
+	UpstreamRequestTimeoutSeconds = getEnvPositiveInt("UPSTREAM_REQUEST_TIMEOUT_SECONDS", 600)
+	UpstreamResponseHeaderTimeoutSeconds = getEnvPositiveInt("UPSTREAM_RESPONSE_HEADER_TIMEOUT_SECONDS", 120)
 	DBDriver = strings.ToLower(strings.TrimSpace(getEnv("DB_DRIVER", "sqlite")))
 	DBPath = getEnv("DB_PATH", "flai.db")
 	DBDSN = strings.TrimSpace(getEnv("DB_DSN", os.Getenv("DATABASE_URL")))

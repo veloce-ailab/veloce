@@ -24,6 +24,7 @@ import (
 	"github.com/shopspring/decimal"
 	"github.com/veloce-ailab/veloce/internal/adapters"
 	"github.com/veloce-ailab/veloce/internal/cache"
+	"github.com/veloce-ailab/veloce/internal/config"
 	"github.com/veloce-ailab/veloce/internal/model"
 	"github.com/veloce-ailab/veloce/internal/ratelimit"
 	"gorm.io/gorm"
@@ -81,16 +82,18 @@ type proxyTarget struct {
 }
 
 type normalizedAIRequest struct {
-	Model          string
-	Messages       []normalizedAIMessage
-	ResponsesInput []map[string]interface{}
-	System         string
-	MaxTokens      int
-	Temperature    *float64
-	Stream         bool
-	StreamOptions  map[string]interface{}
-	Tools          []interface{}
-	ToolChoice     interface{}
+	Model           string
+	Messages        []normalizedAIMessage
+	ResponsesInput  []map[string]interface{}
+	System          string
+	MaxTokens       int
+	Temperature     *float64
+	Stream          bool
+	StreamOptions   map[string]interface{}
+	Reasoning       map[string]interface{}
+	ReasoningEffort string
+	Tools           []interface{}
+	ToolChoice      interface{}
 }
 
 type normalizedAIMessage struct {
@@ -1017,7 +1020,7 @@ func (s *ProxyService) forwardProviderRequestToTarget(c *gin.Context, clientProt
 	upstreamProtocol := channelProtocol(target.Channel.Type)
 	if isPluginUpstream {
 		upstreamProtocol = protocolResponses
-		if clientProtocol != protocolResponses {
+		if !conversionProtocolSupported(clientProtocol) {
 			if !finalAttempt {
 				return false
 			}
@@ -1026,11 +1029,11 @@ func (s *ProxyService) forwardProviderRequestToTarget(c *gin.Context, clientProt
 		}
 	}
 	compactRequest := strings.HasSuffix(strings.TrimRight(c.Request.URL.Path, "/"), "/responses/compact")
-	if normalized.Stream && upstreamProtocol != clientProtocol {
+	if normalized.Stream && upstreamProtocol != clientProtocol && (!conversionProtocolSupported(upstreamProtocol) || !conversionProtocolSupported(clientProtocol)) {
 		if !finalAttempt {
 			return false
 		}
-		c.JSON(http.StatusBadRequest, gin.H{"error": "Streaming is not supported when converting upstream protocol", "type": "unsupported_stream"})
+		c.JSON(http.StatusBadRequest, gin.H{"error": fmt.Sprintf("Veloce cannot convert streaming events from upstream protocol %s to client protocol %s; use a matching-protocol channel or stream=false", upstreamProtocol, clientProtocol), "type": "unsupported_stream"})
 		return true
 	}
 
@@ -1108,9 +1111,13 @@ func (s *ProxyService) forwardProviderRequestToTarget(c *gin.Context, clientProt
 		return true
 	}
 
+	if normalized.Stream && !isStreamingResponse(resp) {
+		c.JSON(http.StatusBadGateway, gin.H{"error": "Upstream returned a non-SSE response to a streaming request", "type": "upstream_protocol_error"})
+		return true
+	}
 	if normalized.Stream || isStreamingResponse(resp) {
-		if upstreamProtocol != clientProtocol {
-			c.JSON(http.StatusBadRequest, gin.H{"error": "Streaming is not supported when converting upstream protocol", "type": "unsupported_stream"})
+		if upstreamProtocol != clientProtocol && (!conversionProtocolSupported(upstreamProtocol) || !conversionProtocolSupported(clientProtocol)) {
+			c.JSON(http.StatusBadRequest, gin.H{"error": fmt.Sprintf("Veloce cannot convert streaming events from upstream protocol %s to client protocol %s; use a matching-protocol channel or stream=false", upstreamProtocol, clientProtocol), "type": "unsupported_stream"})
 			return true
 		}
 		if RiskNeedsSyncOutputBuffer() {
@@ -1126,11 +1133,15 @@ func (s *ProxyService) forwardProviderRequestToTarget(c *gin.Context, clientProt
 			meter.consume(respBody)
 			meter.finish()
 			usage := meter.usageOrEstimate(target.ModelName, normalized)
-			cost, _, _, billErr := s.billDeliveredUsageAndReturnCost(c, target.User, target.APIKey, &target.Channel, &target.ModelConfig, target.billingModelName(), usage, target.billingModel())
-			if billErr != nil {
-				log.Printf("failed to bill buffered streaming usage for user=%d model=%s: %v", target.User.ID, target.ModelName, billErr)
-			}
-			QueueRiskUsage(target.User.ID, cost, usage.InputTokens, usage.OutputTokens)
+			defer func() {
+				cost, _, _, billErr := s.billDeliveredUsageAndReturnCost(c, target.User, target.APIKey, &target.Channel, &target.ModelConfig, target.billingModelName(), usage, target.billingModel())
+				if billErr != nil {
+					log.Printf("failed to bill buffered streaming usage: %v", billErr)
+				}
+				if !clientRequestCanceled(c) {
+					QueueRiskUsage(target.User.ID, cost, usage.InputTokens, usage.OutputTokens)
+				}
+			}()
 			if tooLarge || readErr != nil {
 				c.JSON(http.StatusBadGateway, gin.H{"error": "Response exceeded the risk inspection buffer limit", "type": "risk_policy"})
 				return true
@@ -1139,16 +1150,44 @@ func (s *ProxyService) forwardProviderRequestToTarget(c *gin.Context, clientProt
 				c.JSON(http.StatusForbidden, gin.H{"error": reason, "type": "risk_policy"})
 				return true
 			}
-			writeBufferedStreamingResponse(c, resp, respBody)
+			if upstreamProtocol == clientProtocol {
+				writeBufferedStreamingResponse(c, resp, respBody)
+			} else {
+				writeConvertedStreamHeaders(c, resp)
+				_, _, convertErr := convertProviderSSE(c.Writer, bytes.NewReader(respBody), upstreamProtocol, clientProtocol, target.ModelName)
+				if convertErr != nil {
+					log.Printf("failed to convert buffered SSE: %v", convertErr)
+				}
+			}
+			return true
+		}
+		if upstreamProtocol != clientProtocol {
+			writeConvertedStreamHeaders(c, resp)
+			var meter streamUsageMeter
+			convertedUsage, usageOK, streamErr := convertProviderSSE(c.Writer, io.TeeReader(resp.Body, streamMeterWriter{meter: &meter}), upstreamProtocol, clientProtocol, target.ModelName)
+			meter.finish()
+			if streamErr != nil {
+				log.Printf("failed to convert streamed response: %v", streamErr)
+			}
+			usage := meter.usageOrEstimate(target.ModelName, normalized)
+			if usageOK {
+				usage = convertedUsage
+			}
+			cost, _, _, billErr := s.billDeliveredUsageAndReturnCost(c, target.User, target.APIKey, &target.Channel, &target.ModelConfig, target.billingModelName(), usage, target.billingModel())
+			if billErr != nil {
+				log.Printf("failed to bill converted stream: %v", billErr)
+			}
+			if !clientRequestCanceled(c) {
+				QueueRiskUsage(target.User.ID, cost, usage.InputTokens, usage.OutputTokens)
+			}
 			return true
 		}
 		var meter streamUsageMeter
 		respBody, streamErr := streamUpstreamResponse(c, resp, &meter)
 		meter.finish()
 		if streamErr != nil {
-			// The upstream already produced (and charged us for) these tokens, so
-			// a client disconnect or a truncated stream must still be billed for
-			// what was streamed rather than returning early for free.
+			// Upstream truncation remains billable; downstream cancellation is
+			// recorded separately and intentionally not charged.
 			log.Printf("failed to stream upstream response: %v", streamErr)
 		}
 		usage := meter.usageOrEstimate(target.ModelName, normalized)
@@ -1158,7 +1197,9 @@ func (s *ProxyService) forwardProviderRequestToTarget(c *gin.Context, clientProt
 		if billErr != nil {
 			log.Printf("failed to bill streaming usage for user=%d model=%s: %v", target.User.ID, target.ModelName, billErr)
 		}
-		QueueRiskUsage(target.User.ID, cost, usage.InputTokens, usage.OutputTokens)
+		if !clientRequestCanceled(c) {
+			QueueRiskUsage(target.User.ID, cost, usage.InputTokens, usage.OutputTokens)
+		}
 		return true
 	}
 
@@ -1533,6 +1574,10 @@ func (s *ProxyService) billUsageAndReturnCost(c *gin.Context, user *model.User, 
 }
 
 func (s *ProxyService) settleUsage(c *gin.Context, user *model.User, apiKey *model.APIKey, channel *model.Channel, modelConfig *model.ModelConfig, modelName string, usage usageTokenCounts, billingModel model.Model, responseDelivered bool) (decimal.Decimal, int, string, error) {
+	if clientRequestCanceled(c) {
+		recordCanceledUsage(c, user, apiKey, channel, modelConfig, modelName, usage, billingModel)
+		return decimal.Zero, 0, "", nil
+	}
 	groupMultiplier, err := effectiveUserGroupMultiplier(user, channel.ID, modelConfig.ID)
 	if err != nil {
 		return decimal.Zero, http.StatusInternalServerError, "User group not found", err
@@ -1589,6 +1634,12 @@ func (s *ProxyService) settleUsage(c *gin.Context, user *model.User, apiKey *mod
 		cache.InvalidateUserBillingBalance(billingContext, user.ID)
 		return decimal.Zero, http.StatusInternalServerError, "Failed to read updated balance", err
 	}
+	if clientRequestCanceled(c) {
+		tx.Rollback()
+		cache.InvalidateUserBillingBalance(billingContext, user.ID)
+		recordCanceledUsage(c, user, apiKey, channel, modelConfig, modelName, usage, billingModel)
+		return decimal.Zero, 0, "", nil
+	}
 	if err := tx.Commit().Error; err != nil {
 		cache.InvalidateUserBillingBalance(billingContext, user.ID)
 		return decimal.Zero, http.StatusInternalServerError, "Failed to commit usage", err
@@ -1628,7 +1679,8 @@ func markTokenLogRecorded(c *gin.Context) {
 // 用于把错误信息写进失败明细；正常响应（含流式）原样透传不缓存。
 type errorBodyCaptureWriter struct {
 	gin.ResponseWriter
-	buffer bytes.Buffer
+	buffer  bytes.Buffer
+	context *gin.Context
 }
 
 func (w *errorBodyCaptureWriter) Write(data []byte) (int, error) {
@@ -1639,7 +1691,11 @@ func (w *errorBodyCaptureWriter) Write(data []byte) (int, error) {
 		}
 		w.buffer.Write(data[:remaining])
 	}
-	return w.ResponseWriter.Write(data)
+	n, err := w.ResponseWriter.Write(data)
+	if err != nil && w.context != nil {
+		w.context.Set(tokenLogClientCanceledKey, true)
+	}
+	return n, err
 }
 
 func (w *errorBodyCaptureWriter) WriteString(s string) (int, error) {
@@ -1652,12 +1708,12 @@ func (w *errorBodyCaptureWriter) WriteString(s string) (int, error) {
 func UpstreamFailureLogMiddleware() gin.HandlerFunc {
 	return func(c *gin.Context) {
 		beginTokenLogTiming(c)
-		capture := &errorBodyCaptureWriter{ResponseWriter: c.Writer}
+		capture := &errorBodyCaptureWriter{ResponseWriter: c.Writer, context: c}
 		c.Writer = capture
 		c.Next()
 
 		status := capture.Status()
-		if status < http.StatusBadRequest || c.GetBool(tokenLogRecordedKey) {
+		if (status < http.StatusBadRequest && !clientRequestCanceled(c)) || c.GetBool(tokenLogRecordedKey) {
 			return
 		}
 		raw, ok := c.Get(upstreamFailureTargetKey)
@@ -1666,6 +1722,10 @@ func UpstreamFailureLogMiddleware() gin.HandlerFunc {
 		}
 		target, ok := raw.(*proxyTarget)
 		if !ok || target == nil || target.User == nil {
+			return
+		}
+		if clientRequestCanceled(c) {
+			recordCanceledUsage(c, target.User, target.APIKey, &target.Channel, &target.ModelConfig, target.billingModelName(), usageTokenCounts{}, target.billingModel())
 			return
 		}
 		one := decimal.NewFromInt(1)
@@ -2309,8 +2369,20 @@ func (s *ProxyService) doUpstreamRequest(prepared preparedUpstreamRequest, chann
 	for key, values := range prepared.Header {
 		req.Header[key] = values
 	}
-	client := &http.Client{
-		Timeout: 60 * time.Second,
+	client := newProxyUpstreamHTTPClient()
+	resp, err := client.Do(req)
+	recordUpstreamResult(channel, resp, err)
+	return resp, err
+}
+
+func newProxyUpstreamHTTPClient() *http.Client {
+	transport := http.DefaultTransport.(*http.Transport).Clone()
+	transport.ResponseHeaderTimeout = time.Duration(config.UpstreamResponseHeaderTimeoutSeconds) * time.Second
+	return &http.Client{
+		// Client.Timeout covers reading the entire body, even while SSE data
+		// continues arriving. Keep a bounded but generous generation deadline.
+		Timeout:   time.Duration(config.UpstreamRequestTimeoutSeconds) * time.Second,
+		Transport: transport,
 		CheckRedirect: func(req *http.Request, via []*http.Request) error {
 			if err := ValidateConfiguredHTTPURL(req.URL.String()); err != nil {
 				return err
@@ -2321,9 +2393,6 @@ func (s *ProxyService) doUpstreamRequest(prepared preparedUpstreamRequest, chann
 			return nil
 		},
 	}
-	resp, err := client.Do(req)
-	recordUpstreamResult(channel, resp, err)
-	return resp, err
 }
 
 func sameUpstreamHost(left, right *url.URL) bool {
@@ -2795,6 +2864,11 @@ func normalizeOpenAIRequest(path string, requestBody map[string]interface{}, mod
 		ToolChoice:  requestBody["tool_choice"],
 	}
 	normalized.StreamOptions, _ = requestBody["stream_options"].(map[string]interface{})
+	normalized.Reasoning, _ = requestBody["reasoning"].(map[string]interface{})
+	normalized.ReasoningEffort = strings.TrimSpace(stringFromValue(requestBody["reasoning_effort"]))
+	if normalized.ReasoningEffort == "" {
+		normalized.ReasoningEffort = strings.TrimSpace(stringFromValue(normalized.Reasoning["effort"]))
+	}
 	if isResponsesPath(path) {
 		input := normalizeResponsesInput(requestBody["input"])
 		normalized.ResponsesInput = input
@@ -2804,7 +2878,7 @@ func normalizeOpenAIRequest(path string, requestBody map[string]interface{}, mod
 				case "function_call":
 					callID := responseFirstNonEmptyString(item["call_id"], item["id"])
 					name := strings.TrimSpace(stringFromValue(item["name"]))
-					arguments := stringFromValue(item["arguments"])
+					arguments := protocolToolResultText(item["arguments"])
 					if callID != "" && name != "" {
 						addNormalizedMessage(&normalized, "assistant", "", []interface{}{map[string]interface{}{
 							"id":   callID,
@@ -2818,7 +2892,7 @@ func normalizeOpenAIRequest(path string, requestBody map[string]interface{}, mod
 				case "function_call_output":
 					callID := strings.TrimSpace(stringFromValue(item["call_id"]))
 					if callID != "" {
-						addNormalizedMessage(&normalized, "tool", responseFunctionCallOutputText(item["output"]), nil, callID)
+						addNormalizedMessage(&normalized, "tool", protocolToolResultText(item["output"]), nil, callID)
 					}
 				}
 				continue
@@ -2855,13 +2929,7 @@ func normalizeClaudeRequest(requestBody map[string]interface{}, modelName string
 		ToolChoice:  requestBody["tool_choice"],
 	}
 	if messages, ok := requestBody["messages"].([]interface{}); ok {
-		for _, raw := range messages {
-			item, ok := raw.(map[string]interface{})
-			if !ok {
-				continue
-			}
-			addNormalizedMessage(&normalized, stringFromValue(item["role"]), contentToText(item["content"]), item["tool_calls"], stringFromValue(item["tool_call_id"]))
-		}
+		normalized.Messages = normalizeClaudeToolHistory(messages)
 	}
 	return normalized
 }
@@ -2898,7 +2966,7 @@ func normalizeGeminiRequest(requestBody map[string]interface{}, modelName string
 func addNormalizedMessage(request *normalizedAIRequest, role string, content string, toolCalls interface{}, toolCallID string) {
 	content = strings.TrimSpace(content)
 	toolCallsSlice, _ := toolCalls.([]interface{})
-	if content == "" && len(toolCallsSlice) == 0 {
+	if content == "" && len(toolCallsSlice) == 0 && toolCallID == "" {
 		return
 	}
 	switch strings.ToLower(strings.TrimSpace(role)) {
@@ -2946,6 +3014,9 @@ func openAIChatCompletionsPayloadMap(request normalizedAIRequest) (map[string]in
 		"model":    request.Model,
 		"messages": messages,
 	}
+	if request.ReasoningEffort != "" {
+		payload["reasoning_effort"] = request.ReasoningEffort
+	}
 	if request.MaxTokens > 0 {
 		payload["max_tokens"] = request.MaxTokens
 	}
@@ -2959,10 +3030,18 @@ func openAIChatCompletionsPayloadMap(request normalizedAIRequest) (map[string]in
 		}
 	}
 	if len(request.Tools) > 0 {
-		payload["tools"] = request.Tools
+		tools, err := protocolRequestTools(request.Tools, protocolOpenAI)
+		if err != nil {
+			return nil, err
+		}
+		payload["tools"] = tools
 	}
 	if request.ToolChoice != nil {
-		payload["tool_choice"] = request.ToolChoice
+		choice, err := protocolRequestToolChoice(request.ToolChoice, protocolOpenAI)
+		if err != nil {
+			return nil, err
+		}
+		payload["tool_choice"] = choice
 	}
 	return payload, nil
 }
@@ -2978,19 +3057,10 @@ func openAIResponsesPayload(request normalizedAIRequest) ([]byte, error) {
 func openAIResponsesPayloadMap(request normalizedAIRequest) (map[string]interface{}, error) {
 	input := request.ResponsesInput
 	if len(input) == 0 {
-		input = make([]map[string]interface{}, 0, len(request.Messages)+1)
-		if strings.TrimSpace(request.System) != "" {
-			input = append(input, map[string]interface{}{"role": "system", "content": request.System})
-		}
-		for _, message := range request.Messages {
-			msg := map[string]interface{}{"role": message.Role, "content": message.Content}
-			if len(message.ToolCalls) > 0 {
-				msg["tool_calls"] = message.ToolCalls
-			}
-			if message.Role == "tool" && strings.TrimSpace(message.ToolCallID) != "" {
-				msg["tool_call_id"] = message.ToolCallID
-			}
-			input = append(input, msg)
+		var err error
+		input, err = protocolResponsesToolHistory(request)
+		if err != nil {
+			return nil, err
 		}
 	}
 	if len(input) == 0 {
@@ -2999,6 +3069,11 @@ func openAIResponsesPayloadMap(request normalizedAIRequest) (map[string]interfac
 	payload := map[string]interface{}{
 		"model": request.Model,
 		"input": input,
+	}
+	if request.Reasoning != nil {
+		payload["reasoning"] = request.Reasoning
+	} else if request.ReasoningEffort != "" {
+		payload["reasoning"] = map[string]interface{}{"effort": request.ReasoningEffort}
 	}
 	if request.MaxTokens > 0 {
 		payload["max_output_tokens"] = request.MaxTokens
@@ -3010,10 +3085,18 @@ func openAIResponsesPayloadMap(request normalizedAIRequest) (map[string]interfac
 		payload["stream"] = true
 	}
 	if len(request.Tools) > 0 {
-		payload["tools"] = request.Tools
+		tools, err := protocolRequestTools(request.Tools, protocolResponses)
+		if err != nil {
+			return nil, err
+		}
+		payload["tools"] = tools
 	}
 	if request.ToolChoice != nil {
-		payload["tool_choice"] = request.ToolChoice
+		choice, err := protocolRequestToolChoice(request.ToolChoice, protocolResponses)
+		if err != nil {
+			return nil, err
+		}
+		payload["tool_choice"] = choice
 	}
 	return payload, nil
 }
@@ -3027,19 +3110,9 @@ func claudeMessagesPayload(request normalizedAIRequest) ([]byte, error) {
 }
 
 func claudeMessagesPayloadMap(request normalizedAIRequest) (map[string]interface{}, error) {
-	messages := make([]map[string]interface{}, 0, len(request.Messages))
-	for _, message := range request.Messages {
-		role := "user"
-		if message.Role == "assistant" {
-			role = "assistant"
-		}
-		content := []map[string]interface{}{{"type": "text", "text": message.Content}}
-		if len(message.ToolCalls) > 0 {
-			for _, tc := range message.ToolCalls {
-				content = append(content, tc.(map[string]interface{}))
-			}
-		}
-		messages = append(messages, map[string]interface{}{"role": role, "content": content})
+	messages, err := protocolClaudeToolHistory(request.Messages)
+	if err != nil {
+		return nil, err
 	}
 	if len(messages) == 0 {
 		return nil, errors.New("messages are required")
@@ -3053,6 +3126,16 @@ func claudeMessagesPayloadMap(request normalizedAIRequest) (map[string]interface
 		"max_tokens": maxTokens,
 		"messages":   messages,
 	}
+	if request.Stream {
+		payload["stream"] = true
+	}
+	if request.ToolChoice != nil {
+		choice, err := protocolRequestToolChoice(request.ToolChoice, protocolClaude)
+		if err != nil {
+			return nil, err
+		}
+		payload["tool_choice"] = choice
+	}
 	if strings.TrimSpace(request.System) != "" {
 		payload["system"] = request.System
 	}
@@ -3060,7 +3143,11 @@ func claudeMessagesPayloadMap(request normalizedAIRequest) (map[string]interface
 		payload["temperature"] = *request.Temperature
 	}
 	if len(request.Tools) > 0 {
-		payload["tools"] = request.Tools
+		tools, err := protocolRequestTools(request.Tools, protocolClaude)
+		if err != nil {
+			return nil, err
+		}
+		payload["tools"] = tools
 	}
 	return payload, nil
 }
@@ -3906,8 +3993,8 @@ func messagesToResponsesInput(messages []interface{}) []map[string]interface{} {
 		role := strings.ToLower(strings.TrimSpace(stringFromValue(message["role"])))
 		if role == "tool" {
 			callID := strings.TrimSpace(stringFromValue(message["tool_call_id"]))
-			output := contentToText(message["content"])
-			if callID != "" && output != "" {
+			output := protocolToolResultText(message["content"])
+			if callID != "" {
 				items = append(items, map[string]interface{}{"type": "function_call_output", "call_id": callID, "output": output})
 			}
 			continue
